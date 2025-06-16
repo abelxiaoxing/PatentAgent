@@ -1,0 +1,5 @@
+google-genai>=1.19.0
+httpx[socks]>=0.28.1
+openai>=1.0.0
+python-dotenv>=1.1.0
+streamlit>=1.33.0
