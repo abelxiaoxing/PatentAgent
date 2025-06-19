@@ -12,24 +12,24 @@ dependencies = [
     "streamlit>=1.33.0",
 ]
 
-# 这是专门给 Poetry (Streamlit Cloud 使用) 看的 [tool.poetry] 部分
-[tool.poetry]
-name = "patentagent"
-version = "0.1.0"
-description = "自动撰写发明专利申请文件"
-authors = ["abelxiaoxing@qq.com"] 
-readme = "README.md"
-package-mode = false 
+# 以下为专门给 Poetry (Streamlit Cloud 使用) 看的 部分
+# [tool.poetry]
+# name = "patentagent"
+# version = "0.1.0"
+# description = "自动撰写发明专利申请文件"
+# authors = ["abelxiaoxing@qq.com"] 
+# readme = "README.md"
+# package-mode = false 
 
-[tool.poetry.dependencies]
-python = ">=3.12"
-google-genai = ">=1.19.0"
-# 注意：httpx[socks] 在 poetry 中的写法略有不同
-httpx = {version = ">=0.28.1", extras = ["socks"]}
-openai = ">=1.0.0"
-python-dotenv = ">=1.1.0"
-streamlit = ">=1.33.0"
+# [tool.poetry.dependencies]
+# python = ">=3.12"
+# google-genai = ">=1.19.0"
+# # 注意：httpx[socks] 在 poetry 中的写法略有不同
+# httpx = {version = ">=0.28.1", extras = ["socks"]}
+# openai = ">=1.0.0"
+# python-dotenv = ">=1.1.0"
+# streamlit = ">=1.33.0"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+# [build-system]
+# requires = ["poetry-core"]
+# build-backend = "poetry.core.masonry.api"
