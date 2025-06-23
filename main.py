@@ -4,20 +4,10 @@ import httpx
 import os
 import json
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Any
 from google import genai
 from dotenv import load_dotenv, find_dotenv, set_key
-from pydantic import BaseModel
-import re
-
-def extract_json_from_string(text: str) -> dict | None:
-    """使用正则表达式从可能包含前后缀文本的字符串中提取第一个有效的JSON对象。"""
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    return json.loads(match.group(0))
-
-class Recipe(BaseModel):
-    recipe_name: str
-    ingredients: list[str]
+import time
 
 # 加载 .env 文件中的环境变量
 env_file = find_dotenv()
@@ -82,7 +72,6 @@ class LLMClient:
         if self.provider == "google":
             config = {
                 "response_mime_type": "application/json",
-                "response_schema": Recipe,
             } if json_mode else {}
             
             response = self.client.models.generate_content(
@@ -120,44 +109,98 @@ PROMPT_ANALYZE = (
 # 1. 发明名称代理
 PROMPT_TITLE = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请根据以下核心创新点和技术方案，提炼出符合中国专利命名规范且不超过25个汉字的发明名称。要求简洁明了并准确反映技术内容。请只返回发明名称本身，不要添加任何多余内容。\n\n"
+    "任务描述：请根据以下核心创新点和技术方案，提炼出3个符合中国专利命名规范且不超过25个汉字的备选发明名称。要求简洁明了并准确反映技术内容。\n"
+    "**重要：请直接返回一个包含3个名称字符串的JSON数组，不要包含任何其他解释。**\n"
+    "示例输出: `[\"备选名称一\", \"备选名称二\", \"备选名称三\"]`\n\n"
     "核心创新点：{core_inventive_concept}\n"
     "技术方案概述：{technical_solution_summary}"
 )
 
 # 2. 背景技术代理
-PROMPT_BACKGROUND = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请围绕以下“待解决的技术问题”，撰写“二、现有技术（背景技术）”章节。你需要分析与此问题最相关的现有技术状况，并实事求是地指出现有技术存在的问题及原因。请使用专业、客观的中文，并以 Markdown 格式返回。\n\n"
+PROMPT_BACKGROUND= (
+    "你的任务是：依据以下“发明名称”和“待解决的技术问题”，生成“二、现有技术（背景技术）”章节的 Markdown 内容。\n\n"
+    "核心要求：\n"
+    "1. 分析与问题最相关的现有技术，并指出现存问题及原因。\n"
+    "2. 使用专业、客观的中文。\n"
+    "3. **直接从章节标题开始输出，格式为markdown，严禁包含任何引言、解释、或总结性文字。**\n\n"
     "发明名称：{title}\n"
     "待解决的技术问题：{problem_statement}"
 )
 
 # 3. 发明内容代理
 PROMPT_INVENTION_CONTENT = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请依据以下结构化的发明信息和已生成的背景技术，撰写“三、发明内容”章节。内容需严格对应，逻辑清晰。\n"
-    "1. 发明目的：清晰回应背景技术中提出的问题（源自`problem_statement`）。\n"
-    "2. 技术解决方案：基于`technical_solution_summary`和`key_components_or_steps`展开，清楚、完整地描述本发明的方案。\n"
-    "3. 技术效果：具体、实事求是地描述本发明可达到的效果（源自`achieved_effects`）。\n"
-    "请使用专业、严谨的中文，并以 Markdown 格式返回。\n\n"
-    "发明名称：{title}\n"
-    "背景技术章节（供参考）：\n{background}\n\n"
-    "结构化发明信息：\n"
+    "你的任务是：依据以下结构化信息，生成“三、发明内容”章节的 Markdown 内容。\n\n"
+    "核心要求：\n"
+    "1. 发明目的：清晰回应背景技术中提出的问题。\n"
+    "2. 技术解决方案：基于技术方案概述和关键组件/步骤展开，清楚、完整地描述本发明的方案。\n"
+    "3. 直接从章节标题开始输出，格式为markdown，严禁包含任何引言、解释、或总结性文字。\n"
+    "参考信息：\n"
+    "  - 发明名称: {title}\n"
+    "  - 背景技术章节（供参考）：\n{background}\n\n"
+    "  - 核心创新点: {core_inventive_concept}\n"
     "  - 待解决问题: {problem_statement}\n"
     "  - 技术方案概述: {technical_solution_summary}\n"
     "  - 关键组件/步骤: {key_components_or_steps}\n"
-    "  - 有益效果: {achieved_effects}"
+    "  - 有益效果: {achieved_effects}\n"
 )
 
 # 4. 具体实施方式代理
 PROMPT_IMPLEMENTATION = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请将“发明内容”中阐述的技术方案具体化，撰写“四、具体实施方式”章节。请至少举出一个明确、可操作的具体实施例，可结合“关键组件/步骤清单”进行详细说明。请以 Markdown 格式返回。\n\n"
-    "发明名称：{title}\n"
-    "发明内容章节（作为蓝本）：\n{invention_content}\n\n"
-    "关键组件/步骤清单（供参考）：\n{key_components_or_steps}"
+    "你的任务是：基于“发明内容”和“关键组件/步骤清单”，撰写“四、具体实施方式”章节的 Markdown 内容。\n\n"
+    "核心要求：\n"
+    "1. 提出至少一个明确、可操作的具体实施例。\n"
+    "2. 详细说明技术方案的实现过程。\n"
+    "3. **直接从章节标题开始输出，格式为markdown，严禁包含任何引言、解释、或总结性文字。**\n\n"
+    "参考信息：\n"
+    "  - 发明名称: {title}\n"
+    "  - 发明内容章节（作为蓝本）: {invention_content}\n"
+    "  - 关键组件/步骤清单（供参考）: {key_components_or_steps}"
 )
+
+# --- 新增：工作流配置与依赖管理 ---
+SECTION_ORDER = ["title", "background", "invention", "implementation"]
+SECTION_CONFIG = {
+    "title": {
+        "label": "发明名称",
+        "prompt": PROMPT_TITLE,
+        "dependencies": ["structured_brief"],
+        "json_mode": True,
+    },
+    "background": {
+        "label": "背景技术",
+        "prompt": PROMPT_BACKGROUND,
+        "dependencies": ["title", "structured_brief"],
+    },
+    "invention": {
+        "label": "发明内容",
+        "prompt": PROMPT_INVENTION_CONTENT,
+        "dependencies": ["title", "background", "structured_brief"],
+    },
+    "implementation": {
+        "label": "具体实施方式",
+        "prompt": PROMPT_IMPLEMENTATION,
+        "dependencies": ["title", "invention", "structured_brief"],
+    },
+}
+
+def is_stale(section_key: str) -> bool:
+    """检查某个章节是否因其依赖项更新而过时。"""
+    timestamps = st.session_state.data_timestamps
+    if section_key not in timestamps:
+        return False # 尚未生成，不算过时
+    
+    section_time = timestamps[section_key]
+    for dep in SECTION_CONFIG[section_key]["dependencies"]:
+        if dep in timestamps and timestamps[dep] > section_time:
+            return True
+    return False
+
+def get_active_content(key: str) -> Any:
+    """获取某个部分当前激活版本的内容。"""
+    if f"{key}_versions" not in st.session_state or not st.session_state[f"{key}_versions"]:
+        return None
+    active_index = st.session_state.get(f"{key}_active_index", 0)
+    return st.session_state[f"{key}_versions"][active_index]
 
 # --- Streamlit 应用界面 ---
 def render_sidebar(config: dict):
@@ -206,13 +249,51 @@ def initialize_session_state():
         st.session_state.user_input = ""
     if "structured_brief" not in st.session_state:
         st.session_state.structured_brief = {}
-    for key in ["title", "background", "invention", "implementation"]:
-        if key not in st.session_state:
-            st.session_state[key] = ""
+    if "data_timestamps" not in st.session_state:
+        st.session_state.data_timestamps = {}
+
+    # 为每个章节初始化版本列表和激活索引
+    for key in SECTION_CONFIG:
+        if f"{key}_versions" not in st.session_state:
+            st.session_state[f"{key}_versions"] = []
+        if f"{key}_active_index" not in st.session_state:
+            st.session_state[f"{key}_active_index"] = 0
+
+def generate_section(llm_client: LLMClient, key: str):
+    """生成指定章节内容的通用函数。"""
+    config = SECTION_CONFIG[key]
+    brief = st.session_state.structured_brief
+    
+    # 准备格式化参数
+    format_args = {
+        "structured_brief": brief,
+        "title": get_active_content("title"),
+        "background": get_active_content("background"),
+        "invention_content": get_active_content("invention"),
+        "implementation": get_active_content("implementation"),
+        **brief, # 将摘要内容直接展开，方便prompt调用
+        "key_components_or_steps": "\n".join(brief.get('key_components_or_steps', []))
+    }
+    
+    prompt = config["prompt"].format(**format_args)
+    is_json = config.get("json_mode", False)
+    response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=is_json)
+
+    # 处理响应并更新状态
+    if key == "title":
+        new_versions = json.loads(response_str.strip())
+        st.session_state.title_versions.extend(new_versions)
+        st.session_state.title_active_index = len(st.session_state.title_versions) - 1
+    else:
+        st.session_state[f"{key}_versions"].append(response_str.strip())
+        st.session_state[f"{key}_active_index"] = len(st.session_state[f"{key}_versions"]) - 1
+    
+    st.session_state.data_timestamps[key] = time.time()
 
 def main():
-    st.set_page_config(page_title="专利撰写助手", layout="wide", page_icon="📝")
+    st.set_page_config(page_title="智能专利撰写助手", layout="wide", page_icon="📝")
     st.title("📝 智能专利申请书撰写助手")
+    st.caption("引入了依赖感知、一键生成和版本控制功能")
 
     initialize_session_state()
     render_sidebar(st.session_state.config)
@@ -228,102 +309,138 @@ def main():
     llm_client = st.session_state.llm_client
 
     # --- 阶段一：输入核心构思 ---
-    st.header("Step 1️⃣: 输入核心技术构思")
-    user_input = st.text_area(
-        "在此处粘贴您的技术交底、项目介绍、或任何描述发明的文字：", 
-        value=st.session_state.user_input,
-        height=250, 
-        key="user_input_area"
-    )
-    if st.button("🔬 分析并提炼核心要素", type="primary", disabled=(st.session_state.stage != "input")):
-        if user_input:
-            st.session_state.user_input = user_input
-            prompt = PROMPT_ANALYZE.format(user_input=user_input)
-            with st.spinner("正在调用分析代理，请稍候..."):
-                try:
-                    is_json_mode = st.session_state.config["provider"] == "openai"
-                    response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=is_json_mode)
-                    st.session_state.structured_brief = extract_json_from_string(response_str)
-                    st.session_state.stage = "review_brief"
-                    st.rerun()
-                except (json.JSONDecodeError, KeyError) as e:
-                    st.error(f"无法解析模型返回的核心要素，请检查模型输出或尝试调整输入。错误: {e}\n模型原始返回: \n{response_str}")
-        else:
-            st.warning("请输入您的技术构思。")
+    if st.session_state.stage == "input":
+        st.header("Step 1️⃣: 输入核心技术构思")
+        user_input = st.text_area(
+            "在此处粘贴您的技术交底、项目介绍、或任何描述发明的文字：",
+            value=st.session_state.user_input,
+            height=250,
+            key="user_input_area"
+        )
+        if st.button("🔬 分析并提炼核心要素", type="primary", disabled=(st.session_state.stage != "input")):
+            if user_input:
+                st.session_state.user_input = user_input
+                prompt = PROMPT_ANALYZE.format(user_input=user_input)
+                with st.spinner("正在调用分析代理，请稍候..."):
+                    try:
+                        response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=True)
+                        st.session_state.structured_brief = json.loads(response_str.strip())
+                        st.session_state.stage = "review_brief"
+                        st.rerun()
+                    except (json.JSONDecodeError, KeyError) as e:
+                        st.error(f"无法解析模型返回的核心要素，请检查模型输出或尝试调整输入。错误: {e}\n模型原始返回: \n{response_str}")
+            else:
+                st.warning("请输入您的技术构思。")
 
     # --- 阶段二：审核并确认核心要素 ---
     if st.session_state.stage == "review_brief":
-        st.header("Step 2️⃣: 审核并确认核心要素")
-        st.info("请检查并可编辑由AI提炼的发明核心信息，这将作为后续所有章节撰写的基础。")
+        st.header("Step 2️⃣: 审核核心要素并选择模式")
+        st.info("请检查并编辑AI提炼的发明核心信息。您的修改将自动触发依赖更新提示。")
         
         brief = st.session_state.structured_brief
-        brief['problem_statement'] = st.text_area("1. 待解决的技术问题", value=brief.get('problem_statement', ''), height=100)
-        brief['core_inventive_concept'] = st.text_area("2. 核心创新点", value=brief.get('core_inventive_concept', ''), height=100)
-        brief['technical_solution_summary'] = st.text_area("3. 技术方案概述", value=brief.get('technical_solution_summary', ''), height=100)
-        
+        # 使用 on_change 回调来更新时间戳
+        def update_brief_timestamp():
+            st.session_state.data_timestamps['structured_brief'] = time.time()
+
+        brief['problem_statement'] = st.text_area("1. 待解决的技术问题", value=brief.get('problem_statement', ''), on_change=update_brief_timestamp)
+        brief['core_inventive_concept'] = st.text_area("2. 核心创新点", value=brief.get('core_inventive_concept', ''), on_change=update_brief_timestamp)
+        brief['technical_solution_summary'] = st.text_area("3. 技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)
         key_steps_list = brief.get('key_components_or_steps', [])
         key_steps_str = "\n".join(key_steps_list) if isinstance(key_steps_list, list) else key_steps_list
-        edited_steps_str = st.text_area("4. 关键组件/步骤清单", value=key_steps_str, height=100)
+        edited_steps_str = st.text_area("4. 关键组件/步骤清单", value=key_steps_str, on_change=update_brief_timestamp)
         brief['key_components_or_steps'] = [line.strip() for line in edited_steps_str.split('\n') if line.strip()]
-        brief['achieved_effects'] = st.text_area("5. 有益效果", value=brief.get('achieved_effects', ''), height=100)
+        brief['achieved_effects'] = st.text_area("5. 有益效果", value=brief.get('achieved_effects', ''), on_change=update_brief_timestamp)
 
-        col1, col2 = st.columns(2)
-        if col1.button("✅ 确认核心要素，开始撰写", type="primary"):
-            st.session_state.structured_brief = brief
+        col1, col2, col3 = st.columns([2,2,1])
+        if col1.button("🚀 一键生成初稿", type="primary"):
+            with st.status("正在为您生成完整专利初稿...", expanded=True) as status:
+                for key in SECTION_ORDER:
+                    status.update(label=f"正在生成: {SECTION_CONFIG[key]['label']}...")
+                    generate_section(llm_client, key)
+                status.update(label="✅ 所有章节生成完毕！", state="complete")
             st.session_state.stage = "writing"
             st.rerun()
-        if col2.button("返回重新输入"):
+
+        if col2.button("✍️ 进入分步精修模式"):
+            st.session_state.stage = "writing"
+            st.rerun()
+        
+        if col3.button("返回重新输入"):
             st.session_state.stage = "input"
             st.rerun()
 
     # --- 阶段三：分步生成与撰写 ---
     if st.session_state.stage == "writing":
         st.header("Step 3️⃣: 逐章生成与编辑专利草稿")
-        brief = st.session_state.structured_brief
-
-        # 动态生成各个部分
-        sections = {
-            "title": ("发明名称", PROMPT_TITLE, {"core_inventive_concept": brief['core_inventive_concept'], "technical_solution_summary": brief['technical_solution_summary']}),
-            "background": ("背景技术", PROMPT_BACKGROUND, {"title": st.session_state.title, "problem_statement": brief['problem_statement']}),
-            "invention": ("发明内容", PROMPT_INVENTION_CONTENT, {"title": st.session_state.title, "background": st.session_state.background, **brief}),
-            "implementation": ("具体实施方式", PROMPT_IMPLEMENTATION, {"title": st.session_state.title, "invention_content": st.session_state.invention, "key_components_or_steps": "\n".join(brief['key_components_or_steps'])})
-        }
-
-        # 按照顺序检查并生成
-        for key, (label, prompt_template, format_args) in sections.items():
-            with st.expander(f"**{label}**", expanded=not st.session_state[key]):
-                if not st.session_state[key]:
-                    # 只有前置条件满足时，才显示生成按钮
-                    if all(val for k, val in format_args.items() if k in st.session_state and isinstance(st.session_state[k], str)):
-                        if st.button(f"✍️ 生成{label}", key=f"btn_{key}"):
-                            with st.spinner(f"正在调用{label}代理..."):
-                                prompt = prompt_template.format(**format_args)
-                                response = llm_client.call([{"role": "user", "content": prompt}])
-                                st.session_state[key] = response.strip()
+        
+        for key in SECTION_ORDER:
+            config = SECTION_CONFIG[key]
+            label = config["label"]
+            versions = st.session_state.get(f"{key}_versions", [])
+            is_section_stale = is_stale(key)
+            
+            expander_label = f"**{label}**"
+            if is_section_stale:
+                expander_label += " ⚠️ (依赖项已更新，建议重新生成)"
+            elif not versions:
+                expander_label += " (待生成)"
+            
+            with st.expander(expander_label, expanded=not versions or is_section_stale):
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    # 检查前置依赖是否都已生成
+                    deps_met = all(get_active_content(dep) for dep in config["dependencies"] if dep != "structured_brief")
+                    if deps_met:
+                        if st.button(f"🔄 重新生成 {label}" if versions else f"✍️ 生成 {label}", key=f"btn_{key}"):
+                            with st.spinner(f"正在调用 {label} 代理..."):
+                                generate_section(llm_client, key)
                                 st.rerun()
                     else:
-                        st.info(f"请先生成前置章节（如：发明名称）以继续。")
-                
-                # 显示已生成的内容供编辑
-                if st.session_state[key]:
-                    if key == 'title':
-                        st.session_state[key] = st.text_input(label, value=st.session_state[key], key=f"edit_{key}")
-                    else:
-                        st.session_state[key] = st.text_area(label, value=st.session_state[key], height=300, key=f"edit_{key}")
+                        st.info(f"请先生成前置章节。")
 
-        # --- 阶段四：预览与下载 ---
-        if all(st.session_state[key] for key in sections):
-            st.header("Step 4️⃣: 预览与下载")
-            st.markdown("---")
-            full_text = (
-                f"# 一、发明名称\n{st.session_state.title}\n\n"
-                f"{st.session_state.background}\n\n"
-                f"{st.session_state.invention}\n\n"
-                f"{st.session_state.implementation}"
-            )
-            st.subheader("完整草稿预览")
-            st.markdown(full_text)
-            st.download_button("📄 下载完整草稿 (.md)", full_text, file_name=f"{st.session_state.title}_patent_draft.md")
+                with col2:
+                    if len(versions) > 1:
+                        # 版本选择器
+                        active_idx = st.session_state.get(f"{key}_active_index", 0)
+                        new_idx = st.selectbox(f"选择版本 (共{len(versions)}个)", range(len(versions)), index=active_idx, format_func=lambda x: f"版本 {x+1}", key=f"select_{key}")
+                        if new_idx != active_idx:
+                            st.session_state[f"{key}_active_index"] = new_idx
+                            st.rerun()
+
+                # 显示和编辑当前激活版本的内容
+                if versions:
+                    active_content = get_active_content(key)
+                    
+                    def create_new_version(k, new_content):
+                        st.session_state[f"{k}_versions"].append(new_content)
+                        st.session_state[f"{k}_active_index"] = len(st.session_state[f"{k}_versions"]) - 1
+                        st.session_state.data_timestamps[k] = time.time()
+
+                    if key == 'title':
+                        edited_content = st.text_input("编辑区", value=active_content, key=f"edit_{key}")
+                    else:
+                        edited_content = st.text_area("编辑区", value=active_content, height=300, key=f"edit_{key}")
+                    
+                    if edited_content != active_content:
+                        create_new_version(key, edited_content)
+                        st.rerun()
+
+    # --- 阶段四：预览与下载 ---
+    if all(get_active_content(key) for key in SECTION_ORDER):
+        st.header("Step 4️⃣: 预览与下载")
+        st.markdown("---")
+        
+        title = get_active_content('title')
+        full_text = (
+            f"# 一、发明名称\n{title}\n\n"
+            f"{get_active_content('background')}\n\n"
+            f"{get_active_content('invention')}\n\n"
+            f"{get_active_content('implementation')}"
+        )
+        st.subheader("完整草稿预览")
+        st.markdown(full_text)
+        st.download_button("📄 下载完整草稿 (.md)", full_text, file_name=f"{title}_patent_draft.md")
 
 if __name__ == "__main__":
     main()
