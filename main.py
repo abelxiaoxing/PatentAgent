@@ -373,6 +373,16 @@ def main():
     if st.session_state.stage == "writing":
         st.header("Step 3️⃣: 逐章生成与编辑专利草稿")
         
+        # 增加一个返回第二阶段的按钮
+        if st.button("⬅️ 返回修改核心要素"):
+            st.session_state.stage = "review_brief"
+            st.rerun()
+        
+        st.markdown("---")
+
+        # 获取并清除“刚刚生成”的标记，用于自动展开
+        just_generated_key = st.session_state.pop('just_generated_key', None)
+
         for key in SECTION_ORDER:
             config = SECTION_CONFIG[key]
             label = config["label"]
@@ -385,7 +395,9 @@ def main():
             elif not versions:
                 expander_label += " (待生成)"
             
-            with st.expander(expander_label, expanded=not versions or is_section_stale):
+            # 自动展开逻辑，如果某个章节是刚刚生成的，则自动展开
+            is_expanded = (not versions) or is_section_stale or (key == just_generated_key)
+            with st.expander(expander_label, expanded=is_expanded):
                 col1, col2 = st.columns([3, 1])
                 
                 with col1:
@@ -395,6 +407,8 @@ def main():
                         if st.button(f"🔄 重新生成 {label}" if versions else f"✍️ 生成 {label}", key=f"btn_{key}"):
                             with st.spinner(f"正在调用 {label} 代理..."):
                                 generate_section(llm_client, key)
+                                # 设置标记，以便下次重载时自动展开
+                                st.session_state.just_generated_key = key
                                 st.rerun()
                     else:
                         st.info(f"请先生成前置章节。")
@@ -427,7 +441,7 @@ def main():
                         st.rerun()
 
     # --- 阶段四：预览与下载 ---
-    if all(get_active_content(key) for key in SECTION_ORDER):
+    if st.session_state.stage == "writing" and all(get_active_content(key) for key in SECTION_ORDER):
         st.header("Step 4️⃣: 预览与下载")
         st.markdown("---")
         
