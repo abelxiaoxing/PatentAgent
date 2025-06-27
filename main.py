@@ -91,80 +91,110 @@ class LLMClient:
 # --- Prompt 模板 ---
 ROLE_INSTRUCTION = "你是一位资深的专利代理师，擅长撰写结构清晰、逻辑严谨的专利申请文件。你的回答必须严格遵循格式要求，直接输出内容，不包含任何解释性文字。"
 
+
 # 0. 分析代理
 PROMPT_ANALYZE = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请仔细阅读并分析以下技术交底材料，将其拆解并提炼成一个结构化的JSON对象。\n"
+    "任务描述：请深入、细致地阅读并分析以下技术交底材料，将其拆解并提炼成一个结构化的、内容详实的JSON对象。\n"
     "**重要：请直接返回有效的JSON对象，不要包含任何解释性文字、前言或代码块标记。你的回答必须以 `{{\n` 开头，并以 `}}` 结尾。**\n"
     "JSON结构应包含以下字段：\n"
-    "1. `problem_statement`: 该发明旨在解决的现有技术中的具体问题是什么？（1-2句话）\n"
-    "2. `core_inventive_concept`: 本发明的核心创新点或最关键的技术特征是什么？（区别于现有技术的本质）\n"
-    "3. `technical_solution_summary`: 为解决上述问题，本发明提出的技术方案概述，包括关键组件或步骤。\n"
-    "4. `key_components_or_steps`: 列出实现该方案所需的主要物理组件或工艺步骤的清单（使用列表格式）。\n"
-    "5. `achieved_effects`: 与现有技术相比，本发明能带来的具体、可量化的有益效果是什么？\n\n"
+    "1. `background_technology`: 详细描述与本发明最相关的现有技术（Prior Art）。说明这些技术通常是如何工作的，以及它们的应用领域，为理解问题提供充分的背景。\n"
+    "2. `problem_statement`: 基于上述背景技术，清晰、具体地阐述现有技术中存在的一个或多个关键问题、缺陷或技术痛点。请分析这些问题为何会成为障碍，例如导致效率低下、成本高昂、功能受限或用户体验不佳等。\n"
+    "3. `core_inventive_concept`: 提炼出发明区别于现有技术的**本质性创新点**。这不仅仅是一个功能，而是一种新的技术思想、工作原理或系统架构。请用几句话解释这个核心思想是什么，以及它是如何从根本上解决上述问题的。\n"
+    "4. `technical_solution_summary`: 概述为实现上述创新点所提出的完整技术方案。应描述该方案的**整体架构、主要工作流程或关键方法步骤**，清晰地展现各个部分是如何协同工作以实现发明目的的。\n"
+    "5. `key_components_or_steps`: 以JSON对象列表的形式，列出实现技术方案所需的**所有关键物理组件或核心工艺步骤**。每个对象应包含`name`（组件/步骤名称）和`function`（该组件/步骤在本方案中的具体作用和目的）两个字段。示例：`[{{\"name\": \"组件A\", \"function\": \"负责接收原始信号并进行初步滤波。\"}}]`。\n"
+    "6. `achieved_effects`: 与现有技术进行对比，详细列出本发明能够带来的**具体、可量化或可验证的有益效果**。例如：'处理速度提升30%'、'能耗降低50%'、'识别准确率从85%提高到98%'、'结构简化，减少了两个必要部件'等。避免空泛的描述。\n\n"
     "技术交底材料：\n{user_input}"
 )
-
 # 1. 发明名称代理
 PROMPT_TITLE = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务描述：根据以下核心创新点和技术方案，提炼出3个符合中国专利命名规范且不超过25个汉字的备选发明名称。要求简洁明了并准确反映技术内容。\n"
-    "**重要：请直接返回一个包含3个名称字符串的JSON数组。示例输出: `[\"名称一\", \"名称二\", \"名称三\"]`**\n\n"
+    "请根据以下核心创新点与技术方案内容，生成3个不超过25字的中文发明名称建议。\n"
+    "要求：\n"
+    "1. 准确体现技术内容，突出创新点\n"
+    "2. 命名风格需符合中国专利申请规范（避免口语化、广告词、过度抽象）\n"
+    "**输出格式为JSON数组：例如 [\"名称一\", \"名称二\", \"名称三\"]，不得包含解释或注释。**\n\n"
     "核心创新点：{core_inventive_concept}\n"
     "技术方案概述：{technical_solution_summary}"
 )
+
+
 PROMPT_BACKGROUND_PROBLEM = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：基于以下“待解决的技术问题”的简要陈述，撰写“2.2 现有技术存在的问题”段落。\n"
-    "要求：实事求是地指出现有技术存在的具体问题，并尽可能分析其原因。语言专业、客观。\n"
-    "**直接输出段落内容，不要包含标题。**\n\n"
-    "待解决的技术问题简述：{problem_statement}"
+    "任务：请根据以下技术问题概要，撰写一段逻辑严密、论证充分的“现有技术存在的问题”段落。\n"
+    "要求：\n"
+    "1. **问题深化**：清晰地指出当前技术存在的具体缺陷或不足。\n"
+    "2. **原因分析**：深入分析导致这些缺陷产生的技术性或结构性根本原因。\n"
+    "3. **影响阐述**：具体说明这些缺陷对设备性能、生产成本、用户体验或安全可靠性等方面造成的实际不良影响。\n"
+    "4. **语言专业**：使用客观、严谨的技术术语，避免主观臆断和夸张修辞。\n"
+    "**请直接输出段落内容，不要包含标题或任何说明文字。**\n\n"
+    "技术问题概要：{problem_statement}"
 )
+
 PROMPT_BACKGROUND_CONTEXT = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：基于以下“现有技术存在的问题”的详细描述，撰写“2.1 对最接近的现有技术状况的分析说明”段落。\n"
-    "要求：分析与该问题最相关的现有技术状况，为后面指出的问题提供上下文背景。\n"
-    "**直接输出段落内容，不要包含标题。**\n\n"
+    "任务：请根据以下对现有技术的描述，撰写“2.1 对最接近的现有技术状况的分析说明”段落。\n"
+    "要求：\n"
+    "1. **客观描述**：首先客观、清晰地介绍与本发明最相关的一至两种主流现有技术方案、其基本工作原理和应用场景。\n"
+    "2. **逻辑铺垫**：在描述的基础上，巧妙地引出或暗示这些现有技术方案在特定方面存在的固有局限性或技术瓶颈，为下一节“现有技术存在的问题”做好铺垫。\n"
+    "**请直接输出段落内容，不包含标题或其他标识。**\n\n"
+    "现有技术详细描述：\n{background_technology}\n"
     "现有技术存在的问题：\n{background_problem}"
 )
+
 PROMPT_INVENTION_PURPOSE = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：将以下“现有技术存在的问题”段落，改写为“3.1 发明目的”段落。\n"
-    "要求：内容必须与问题一一对应，语气从指出问题转变为阐述本发明要解决的目标。句式通常以“基于此，针对上述...问题，本发明提供/旨在...”开头。\n"
-    "**直接输出段落内容，不要包含标题。**\n\n"
+    "任务：请将以下“现有技术存在的问题”内容，改写为一段清晰、明确的“3.1 发明目的”段落。\n"
+    "要求：\n"
+    "1. **正向转换**：将对问题的批判性描述，转换为旨在解决这些问题的正面陈述。\n"
+    "2. **严格对应**：确保提出的每一个发明目的都直接、精确地对应于“现有技术存在的问题”中指出的一个或多个具体缺陷。\n"
+    "3. **标准句式**：以“鉴于现有技术存在的上述缺陷，本发明的目的在于提供一种...”或“为了解决现有技术中...的问题，本发明提供...”等标准句式开头。\n"
+    "**请直接输出段落内容，不包含标题。**\n\n"
     "现有技术存在的问题：\n{background_problem}"
 )
+
 PROMPT_INVENTION_SOLUTION_POINTS = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：根据“技术方案概述”和“关键组件/步骤清单”，提炼出本发明技术方案的核心要点。\n"
-    "要求：将方案分解为3-5个逻辑清晰、高度概括的步骤或组件要点。\n"
-    "**重要：直接返回一个包含字符串的JSON数组，每个字符串是一个要点。示例：`[\"要点一：xxx\", \"要点二：xxx\"]`**\n\n"
+    "任务：请根据以下技术方案的核心组成及功能，提炼出3-5个最能体现本发明技术构思的核心技术特征要点。\n"
+    "要求：\n"
+    "1. **特征化描述**：每个要点应高度概括一项关键技术特征，清晰描述“什么组件/步骤”以及它“执行了什么关键功能”或“达到了什么技术目的”。\n"
+    "2. **逻辑递进**：这些要点组合起来应能逻辑地呈现出整个技术方案的轮廓。\n"
+    "3. **语言精炼**：语言专业、精炼，避免口语化表达。\n"
+    "**输出格式为JSON数组，例如：[\"特征一：一种包含A模块的系统，所述A模块用于...\", \"特征二：一种方法，包括步骤B，所述步骤B用于...\"]，不得包含说明文字。**\n\n"
     "技术方案概述：{technical_solution_summary}\n"
-    "关键组件/步骤清单：\n{key_components_or_steps}"
+    "关键组件/步骤及其功能清单：\n{key_components_or_steps}"
 )
 
 PROMPT_INVENTION_SOLUTION_DETAIL = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：根据以下技术方案概述、核心创新点和关键组件/步骤，撰写“3.2 技术解决方案”的详细段落。\n"
+    "任务：根据以下材料，撰写一段结构清晰、内容详尽、技术深度充足的“3.2 技术解决方案”段落。\n"
     "要求：\n"
-    "1. **深入阐述**：详细描述技术方案的完整架构和工作流程，解释各个组件或步骤如何协同工作以实现发明目的。\n"
-    "2. **原理和公式**：必须结合具体的技术内容，引入并解释相关的物理原理、数学公式或化学反应式。例如，如果涉及信号处理，应包含傅里叶变换或滤波器设计的公式；如果涉及机械结构，应包含力学分析或运动学方程。公式需使用LaTeX格式（例如 `$$E=mc^2$$`）。\n"
-    "3. **量化和细节**：尽可能提供量化的参数范围、具体的材料选型或算法伪代码，使描述更加具体、可信。\n"
-    "4. **逻辑清晰**：段落结构清晰，逻辑严谨，准确反映技术方案的创新性和可行性。\n"
+    "1. **结构化叙述**：\n"
+    "   a. **总体阐述**：首先用一两句话概括本发明的整体技术方案，点明其要解决的核心问题。\n"
+    "   b. **分部详述**：逐一详细描述每个关键组件或步骤。不仅要说明“是什么”，更要深入解释“为什么”这样设计以及它“如何”与其他部分交互协同工作。\n"
+    "   c. **总结升华**：最后总结这些组成部分如何共同作用，完整地实现了发明的总体目的。\n"
+    "2. **深度与细节**：\n"
+    "   a. **技术原理**：必须结合具体技术内容，引入并解释相关的物理原理、数学公式（使用LaTeX格式，如`$$F=ma$$`）或算法伪代码，以支撑技术方案的合理性。\n"
+    "   b. **量化参数**：尽可能给出具体的、合理的参数范围、材料选型、信号特征或操作条件，使方案具体化，具备可实施性。\n"
+    "3. **紧扣创新**：全文应围绕核心创新点展开，清晰地体现出本方案与现有技术的本质区别。\n"
     "**直接输出详细的“技术解决方案”段落内容，不要包含标题。**\n\n"
     "核心创新点：{core_inventive_concept}\n"
     "技术方案概述：{technical_solution_summary}\n"
-    "关键组件/步骤清单：\n{key_components_or_steps}"
+    "关键组件/步骤及其功能清单：\n{key_components_or_steps}"
 )
 
 PROMPT_INVENTION_EFFECTS = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：基于“技术方案要点”和“有益效果概述”，撰写“3.3 技术效果”段落。\n"
-    "要求：将抽象的有益效果与具体的技术方案要点结合，说明本发明如何通过这些要点实现所述效果。通常以“基于上述技术方案，相比于现有方式，有以下优点：”开头，并分点阐述。\n"
-    "**直接输出段落内容，不要包含标题。**\n\n"
-    "技术方案要点：\n{solution_points_str}\n"
-    "有益效果概述：{achieved_effects}"
+    "任务：请撰写一段论证严谨、说服力强的“3.3 技术效果”段落。\n"
+    "要求：\n"
+    "1. **因果论证**：以分点形式列出有益效果。对于每一点，都必须遵循“声明效果 -> 关联特征 -> 对比现有技术”的逻辑。清晰阐述是**由于**本方案中的哪个/哪些技术特征，才带来了这项有益效果，并与现有技术进行对比，突出优势。\n"
+    "2. **具体可信**：效果描述应尽可能具体、量化（引用`achieved_effects`中的数据），避免使用“更好”、“更快”等模糊词汇。\n"
+    "3. **标准开头**：段落以“与现有技术相比，本发明由于采用了上述技术方案，至少具有以下一项或多项有益效果：”或类似表述开始。\n"
+    "**请直接输出段落内容，不包含标题。**\n\n"
+    "本发明的技术方案要点：\n{solution_points_str}\n"
+    "本发明的有益效果概述：{achieved_effects}"
 )
+
 
 PROMPT_MERMAID_IDEAS = (
     f"{ROLE_INSTRUCTION}\n"
@@ -179,18 +209,29 @@ PROMPT_MERMAID_IDEAS = (
 
 PROMPT_MERMAID_CODE = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：根据“技术解决方案”的完整描述和指定的“附图构思”，生成一份详细、准确的Mermaid图代码。\n"
-    "要求：\n"
-    "1. **准确反映**: 图必须准确地反映技术方案，特别是构思中要求展示的细节。\n"
-    "2. **选择合适的图类型**: 根据构思内容，选择最合适的Mermaid图类型（如 `graph TD`, `flowchart TD`, `sequenceDiagram`, `componentDiagram` 等）。\n"
-    "3. **代码质量**: 生成的Mermaid代码必须语法正确、结构清晰、易于阅读。\n"
-    "4. **[]内换行处理**: 在 [] 内插入换行时，使用 <br> 实现换行。\n"
-    "5. **[]格式要求**: []内必须使用双引号包裹内容。"
-    "**重要：直接返回Mermaid代码文本，不要包含任何解释性文字或代码块标记 (e.g., ```mermaid)。**\n\n"
+    "任务：根据“技术解决方案”的完整描述和指定的“附图构思”，生成一份符合 Mermaid 语法规范的流程图代码。\n"
+    "\n"
+    "【输出要求】\n"
+    "1. **准确表达技术内容**：图结构必须准确反映附图构思中的功能流程或结构关系。\n"
+    "2. **选择合适的图类型**：根据内容选择最合适的 Mermaid 图类型，例如 `graph TD`, `flowchart TD`, `sequenceDiagram`, `classDiagram`, `stateDiagram` 等。\n"
+    "3. **严格 Mermaid 语法规范，避免一切语法错误**，特别注意以下禁止事项：\n"
+    "   - **禁止公式**：不得使用 `$...$`、`\\frac`、`\\sum`、上标、下标、希腊字母等任何数学表达式；请以通俗文字表达；\n"
+    "   - **禁止注释**：不得在任何图中插入注释（如 `// 注释`、`# 注释`、`% 注释` 等），也不得夹在图结构行末；\n"
+    "   - **禁止节点中嵌套 `[]` 或引号**：所有节点标签必须使用英文双引号包裹，内部不能再使用中括号；\n"
+    "   - **禁止节点内公式、代码、特殊字符**：不使用 `*`, `{}`, `[]`, `< >` 中的嵌套结构，内容尽量简单明了；\n"
+    "4. **节点标签换行规范**：\n"
+    "   - 若需换行，使用 `<br>` 标签（仅在标签中使用）；\n"
+    "   - 节点格式统一为 A[\"内容\"]；始终使用双引号包裹内容；\n"
+    "5. **输出格式严格要求**：\n"
+    "   - 仅返回 Mermaid 图代码正文；\n"
+    "   - 不得包含 Markdown 代码块标记（如 ```mermaid）；\n"
+    "   - 不添加任何非 Mermaid 内容或额外解释说明。\n"
+    "\n"
     "附图构思标题：{title}\n"
     "附图构思描述：{description}\n\n"
     "技术解决方案全文参考：\n{invention_solution_detail}"
 )
+
 
 PROMPT_IMPLEMENTATION_POINT = (
     f"{ROLE_INSTRUCTION}\n"
@@ -220,8 +261,8 @@ UI_SECTION_CONFIG = {
         "dependencies": ["background", "structured_brief"],
     },
     "drawings": {
-        "label": "附图及附图的简单说明",
-        "workflow_keys": ["mermaid_ideas"], # Note: mermaid_codes are handled dynamically
+        "label": "附图",
+        "workflow_keys": ["drawings"],
         "dependencies": ["invention"],
     },
     "implementation": {
@@ -239,7 +280,6 @@ WORKFLOW_CONFIG = {
     "solution_points": {"prompt": PROMPT_INVENTION_SOLUTION_POINTS, "json_mode": True, "dependencies": ["technical_solution_summary", "key_components_or_steps"]},
     "invention_solution_detail": {"prompt": PROMPT_INVENTION_SOLUTION_DETAIL, "json_mode": False, "dependencies": ["core_inventive_concept", "technical_solution_summary", "key_components_or_steps"]},
     "invention_effects": {"prompt": PROMPT_INVENTION_EFFECTS, "json_mode": False, "dependencies": ["solution_points", "achieved_effects"]},
-    "mermaid_ideas": {"prompt": PROMPT_MERMAID_IDEAS, "json_mode": True, "dependencies": ["invention_solution_detail"]},
     "implementation_details": {"prompt": PROMPT_IMPLEMENTATION_POINT, "json_mode": False, "dependencies": ["solution_points"]},
 }
 
@@ -279,8 +319,6 @@ def initialize_session_state():
         st.session_state.structured_brief = {}
     if "data_timestamps" not in st.session_state:
         st.session_state.data_timestamps = {}
-    if "mermaid_drawings" not in st.session_state:
-        st.session_state.mermaid_drawings = {} # {idea_title: {"code": "...", "description": "..."}}
 
     all_keys = list(UI_SECTION_CONFIG.keys()) + list(WORKFLOW_CONFIG.keys())
     for key in all_keys:
@@ -324,6 +362,51 @@ def render_sidebar(config: dict):
             if 'llm_client' in st.session_state:
                 del st.session_state.llm_client
             st.rerun()
+
+def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str):
+    """统一生成所有附图：先构思，然后为每个构思生成代码。"""
+    if not invention_solution_detail:
+        st.warning("无法生成附图，因为“技术解决方案”内容为空。")
+        return
+
+    # 1. Generate ideas
+    ideas_prompt = PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
+    try:
+        ideas_response_str = llm_client.call([{"role": "user", "content": ideas_prompt}], json_mode=True)
+        ideas = json.loads(ideas_response_str.strip())
+        if not isinstance(ideas, list):
+            st.error(f"附图构思返回格式错误，期望列表但得到: {ideas_response_str}")
+            return
+    except (json.JSONDecodeError, KeyError) as e:
+        st.error(f"无法解析附图构思列表: {ideas_response_str}")
+        return
+
+    # 2. Generate code for each idea
+    drawings = []
+    progress_bar = st.progress(0, text="正在生成附图代码...")
+    for i, idea in enumerate(ideas):
+        idea_title = idea.get('title', f'附图构思 {i+1}')
+        idea_desc = idea.get('description', '')
+        
+        code_prompt = PROMPT_MERMAID_CODE.format(
+            title=idea_title,
+            description=idea_desc,
+            invention_solution_detail=invention_solution_detail
+        )
+        code = llm_client.call([{"role": "user", "content": code_prompt}], json_mode=False)
+        
+        drawings.append({
+            "title": idea_title,
+            "description": idea_desc,
+            "code": code.strip()
+        })
+        progress_bar.progress((i + 1) / len(ideas), text=f"已生成附图: {idea_title}")
+    
+    # 3. Save to session state
+    st.session_state.drawings_versions.append(drawings)
+    st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
+    st.session_state.data_timestamps['drawings'] = time.time()
+
 
 def generate_ui_section(llm_client: LLMClient, ui_key: str):
     """为单个UI章节执行其背后的完整微任务流，并组装最终内容。"""
@@ -398,9 +481,9 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
     st.session_state.data_timestamps[ui_key] = time.time()
 
 def main():
-    st.set_page_config(page_title="智能专利撰写助手 v2", layout="wide", page_icon="📝")
-    st.title("📝 智能专利申请书撰写助手 v2")
-    st.caption("新增附图生成功能，支持分步构思、独立生成和下载")
+    st.set_page_config(page_title="智能专利撰写助手 v3", layout="wide", page_icon="📝")
+    st.title("📝 智能专利申请书撰写助手 v3")
+    st.caption("附图流程已升级：一键生成初稿时将自动构思并生成全套附图。")
 
     initialize_session_state()
     config = st.session_state.config
@@ -448,22 +531,43 @@ def main():
         def update_brief_timestamp():
             st.session_state.data_timestamps['structured_brief'] = time.time()
 
-        brief['problem_statement'] = st.text_area("1. 待解决的技术问题", value=brief.get('problem_statement', ''), on_change=update_brief_timestamp)
-        brief['core_inventive_concept'] = st.text_area("2. 核心创新点", value=brief.get('core_inventive_concept', ''), on_change=update_brief_timestamp)
-        brief['technical_solution_summary'] = st.text_area("3. 技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)
+        brief['background_technology'] = st.text_area("背景技术", value=brief.get('background_technology', ''), on_change=update_brief_timestamp)
+        brief['problem_statement'] = st.text_area("待解决的技术问题", value=brief.get('problem_statement', ''), on_change=update_brief_timestamp)
+        brief['core_inventive_concept'] = st.text_area("核心创新点", value=brief.get('core_inventive_concept', ''), on_change=update_brief_timestamp)
+        brief['technical_solution_summary'] = st.text_area("技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)
+        
         key_steps_list = brief.get('key_components_or_steps', [])
-        key_steps_str = "\n".join(key_steps_list) if isinstance(key_steps_list, list) else key_steps_list
-        edited_steps_str = st.text_area("4. 关键组件/步骤清单", value=key_steps_str, on_change=update_brief_timestamp)
+        if isinstance(key_steps_list, list) and key_steps_list and isinstance(key_steps_list[0], dict):
+            # Format list of dicts into a display string
+            key_steps_str = "\n".join([f"{item.get('name', '')}: {item.get('function', '')}" for item in key_steps_list])
+        elif isinstance(key_steps_list, list):
+            # If it's already a list of strings (e.g., after an edit), just join
+            key_steps_str = "\n".join(key_steps_list)
+        else:
+            # Fallback for other types
+            key_steps_str = str(key_steps_list)
+
+        edited_steps_str = st.text_area("关键组件/步骤清单", value=key_steps_str, on_change=update_brief_timestamp)
+        # Always update the brief with the content from the text area, which is now a list of strings
         brief['key_components_or_steps'] = [line.strip() for line in edited_steps_str.split('\n') if line.strip()]
-        brief['achieved_effects'] = st.text_area("5. 有益效果", value=brief.get('achieved_effects', ''), on_change=update_brief_timestamp)
+        brief['achieved_effects'] = st.text_area("有益效果", value=brief.get('achieved_effects', ''), on_change=update_brief_timestamp)
 
         col1, col2, col3 = st.columns([2,2,1])
         if col1.button("🚀 一键生成初稿", type="primary"):
             with st.status("正在为您生成完整专利初稿...", expanded=True) as status:
+                # Generate text sections first
                 for key in UI_SECTION_ORDER:
-                    if key == 'drawings': continue
+                    if key == 'drawings': 
+                        continue
                     status.update(label=f"正在生成: {UI_SECTION_CONFIG[key]['label']}...")
                     generate_ui_section(llm_client, key)
+                
+                # Then, generate all drawings based on the invention content
+                status.update(label="正在构思并生成全套附图...")
+                invention_solution_detail = get_active_content("invention_solution_detail")
+                if invention_solution_detail:
+                    generate_all_drawings(llm_client, invention_solution_detail)
+                
                 status.update(label="✅ 所有章节生成完毕！", state="complete")
             st.session_state.stage = "writing"
             st.rerun()
@@ -496,10 +600,10 @@ def main():
             expander_label = f"**{label}**"
             if is_section_stale:
                 expander_label += " ⚠️ (依赖项已更新，建议重新生成)"
-            elif not versions and key != 'drawings':
+            elif not versions:
                 expander_label += " (待生成)"
             
-            is_expanded = (not versions and key != 'drawings') or is_section_stale or (key == just_generated_key) or (key == 'drawings' and bool(get_active_content('invention')))
+            is_expanded = (not versions) or is_section_stale or (key == just_generated_key)
             with st.expander(expander_label, expanded=is_expanded):
                 # --- 特殊处理附图章节 ---
                 if key == 'drawings':
@@ -508,68 +612,57 @@ def main():
                         st.info("请先生成“发明内容”章节中的“技术解决方案”。")
                         continue
 
-                    # 1. 构思附图
-                    if st.button("💡 构思附图列表"):
-                        with st.spinner("正在构思附图..."):
-                            prompt = PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
-                            response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=True)
-                            try:
-                                ideas = json.loads(response_str.strip())
-                                st.session_state.mermaid_ideas_versions.append(ideas)
-                                st.session_state.mermaid_ideas_active_index = len(st.session_state.mermaid_ideas_versions) - 1
-                                st.session_state.mermaid_drawings = {} # 清空旧图
-                                st.rerun()
-                            except json.JSONDecodeError:
-                                st.error(f"无法解析附图构思列表: {response_str}")
+                    if st.button("💡 (重新)构思并生成所有附图"):
+                        with st.spinner("正在为您重新生成全套附图..."):
+                            generate_all_drawings(llm_client, invention_solution_detail)
+                            st.rerun()
 
-                    ideas = get_active_content("mermaid_ideas")
-                    if ideas:
-                        st.markdown("---")
-                        st.subheader("附图构思清单")
-                        st.caption("请选择一个构思，AI将为其生成对应的Mermaid图。")
+                    drawings = get_active_content("drawings")
+                    if drawings:
+                        st.caption("为保证独立性，可对单个附图重新生成，或在下方编辑代码。")
                         
-                        for i, idea in enumerate(ideas):
-                            idea_title = idea.get('title', f"构思 {i+1}")
-                            st.markdown(f"**{idea_title}**")
-                            st.markdown(f"*{idea.get('description')}*")
-                            
-                            if st.button(f"✍️ 生成此图", key=f"gen_mermaid_{i}"):
-                                with st.spinner(f"正在为“{idea_title}”生成Mermaid代码..."):
-                                    prompt = PROMPT_MERMAID_CODE.format(
-                                        title=idea_title,
-                                        description=idea.get('description', ''),
-                                        invention_solution_detail=invention_solution_detail
-                                    )
-                                    code = llm_client.call([{"role": "user", "content": prompt}], json_mode=False)
-                                    st.session_state.mermaid_drawings[idea_title] = {
-                                        "code": code.strip(),
-                                        "description": ""
-                                    }
-                                    st.rerun()
-                            st.markdown("---")
-
-                    if st.session_state.mermaid_drawings:
-                        st.subheader("已生成附图")
-                        for i, (title, drawing) in enumerate(st.session_state.mermaid_drawings.items()):
+                        for i, drawing in enumerate(drawings):
                             with st.container(border=True):
-                                st.markdown(f"**{title}**")
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.markdown(f"**附图 {i+1}: {drawing.get('title', '无标题')}**")
+                                with col2:
+                                    if st.button(f"🔄 重新生成此图", key=f"regen_drawing_{i}"):
+                                        with st.spinner(f"正在重新生成附图: {drawing.get('title', '无标题')}..."):
+                                            code_prompt = PROMPT_MERMAID_CODE.format(
+                                                title=drawing.get('title', ''),
+                                                description=drawing.get('description', ''),
+                                                invention_solution_detail=invention_solution_detail
+                                            )
+                                            new_code = llm_client.call([{"role": "user", "content": code_prompt}], json_mode=False)
+                                            
+                                            active_drawings = json.loads(json.dumps(get_active_content("drawings")))
+                                            active_drawings[i]["code"] = new_code.strip()
+                                            
+                                            st.session_state.drawings_versions.append(active_drawings)
+                                            st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
+                                            st.session_state.data_timestamps['drawings'] = time.time()
+                                            st.rerun()
 
+                                st.markdown(f"**构思说明:** *{drawing.get('description', '无')}*")
+                                
                                 drawing_key = f"mermaid_{i}"
-                                safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_')).rstrip()
+                                safe_title = "".join(c for c in drawing.get('title', '') if c.isalnum() or c in (' ', '_')).rstrip()
+                                
+                                escaped_code = drawing["code"].replace("`", "\
+")
 
                                 html_component = f'''
                                     <div id="mermaid-view-{drawing_key}">
                                         <div id="mermaid-output-{drawing_key}" style="background-color: white; padding: 1rem; border-radius: 0.5rem;"></div>
                                     </div>
-                                    
                                     <button id="download-btn-{drawing_key}" style="margin-top: 10px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; cursor: pointer;">📥 下载 PNG</button>
-
                                     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
                                     <script>
                                     (function() {{
                                         const drawingKey = "{drawing_key}";
-                                        const pngFileName = "{safe_title}.png";
-                                        const code = `{drawing["code"].replace("`", "`")}`;
+                                        const pngFileName = "{safe_title or f'drawing_{i}'}.png";
+                                        const code = `{escaped_code}`.trim();
                                         
                                         const outputDiv = document.getElementById(`mermaid-output-${{drawingKey}}`);
                                         const downloadBtn = document.getElementById(`download-btn-${{drawingKey}}`);
@@ -588,10 +681,7 @@ def main():
                                         const downloadPNG = async () => {{
                                             try {{
                                                 const svgElement = outputDiv.querySelector('svg');
-                                                if (!svgElement) {{
-                                                    alert("Diagram not rendered yet. Cannot download.");
-                                                    return;
-                                                }}
+                                                if (!svgElement) {{ alert("Diagram not rendered yet."); return; }}
                                                 
                                                 const svgData = new XMLSerializer().serializeToString(svgElement);
                                                 const img = new Image();
@@ -599,15 +689,13 @@ def main():
                                                 const ctx = canvas.getContext('2d');
 
                                                 img.onload = function() {{
-                                                    const scale = 2; // Higher resolution
+                                                    const scale = 2;
                                                     const rect = svgElement.getBoundingClientRect();
                                                     canvas.width = rect.width * scale;
                                                     canvas.height = rect.height * scale;
-                                                    
                                                     ctx.fillStyle = 'white';
                                                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                                                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
                                                     const pngFile = canvas.toDataURL('image/png');
                                                     const downloadLink = document.createElement('a');
                                                     downloadLink.download = pngFileName;
@@ -623,21 +711,22 @@ def main():
                                             }}
                                         }};
 
-                                        renderDiagram();
-                                        downloadBtn.addEventListener('click', downloadPNG);
+                                        if (code) {{
+                                            renderDiagram();
+                                            downloadBtn.addEventListener('click', downloadPNG);
+                                        }}
                                     }})();
                                     </script>
                                 '''
                                 components.html(html_component, height=450, scrolling=True)
                                 
-                                edited_code = st.text_area("编辑Mermaid代码:", value=drawing["code"], key=f"edit_code_{title}", height=150)
+                                edited_code = st.text_area("编辑Mermaid代码:", value=drawing["code"], key=f"edit_code_{i}", height=150)
                                 if edited_code != drawing["code"]:
-                                    st.session_state.mermaid_drawings[title]["code"] = edited_code
-                                    st.rerun()
-
-                                edited_desc = st.text_input("附图的简单说明:", value=drawing.get("description", ""), key=f"edit_desc_{title}")
-                                if edited_desc != drawing.get("description", ""):
-                                    st.session_state.mermaid_drawings[title]["description"] = edited_desc
+                                    active_drawings = json.loads(json.dumps(get_active_content("drawings")))
+                                    active_drawings[i]["code"] = edited_code
+                                    st.session_state.drawings_versions.append(active_drawings)
+                                    st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
+                                    st.session_state.data_timestamps['drawings'] = time.time()
                                     st.rerun()
                     continue
                 
@@ -688,18 +777,17 @@ def main():
         
         # 构建附图章节
         drawings_text = ""
-        if st.session_state.mermaid_drawings:
-            for i, (drawing_title, drawing_data) in enumerate(st.session_state.mermaid_drawings.items()):
-                drawings_text += f"## 附图{i+1}：{drawing_title}\n"
-                drawings_text += f"```mermaid\n{drawing_data['code']}\n```\n"
-                if drawing_data.get('description'):
-                    drawings_text += f"**附图{i+1}的简单说明**：{drawing_data['description']}\n\n"
+        drawings = get_active_content("drawings")
+        if drawings:
+            for i, drawing in enumerate(drawings):
+                drawings_text += f"## 附图{i+1}：{drawing['title']}\n"
+                drawings_text += f"```mermaid\n{drawing['code']}\n```\n\n"
 
         full_text = (
             f"# 一、发明名称\n{title}\n\n"
             f"# 二、现有技术（背景技术）\n{get_active_content('background')}\n\n"
             f"# 三、发明内容\n{get_active_content('invention')}\n\n"
-            f"# 四、附图及附图的简单说明\n{drawings_text if drawings_text else '（本申请无附图）'}\n\n"
+            f"# 四、附图\n{drawings_text if drawings_text else '（本申请无附图）'}\n\n"
             f"# 五、具体实施方式\n{get_active_content('implementation')}"
         )
         st.subheader("完整草稿预览")
