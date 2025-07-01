@@ -9,6 +9,7 @@ from google import genai
 from dotenv import load_dotenv, find_dotenv, set_key
 import time
 import streamlit.components.v1 as components
+import prompts
 
 # 加载 .env 文件中的环境变量
 env_file = find_dotenv()
@@ -21,37 +22,40 @@ def load_config() -> dict:
     """加载配置，支持 openai兼容格式 / google 分节嵌套结构。"""
     return {
         "provider": os.getenv("PROVIDER", "openai"),
-        "proxy_url": os.getenv("PROXY_URL", ""),
         "openai": {
             "api_base": os.getenv("OPENAI_API_BASE", "https://api.mistral.ai/v1"),
             "api_key": os.getenv("OPENAI_API_KEY", ""),
             "model": os.getenv("OPENAI_MODEL", "mistral-medium-latest"),
+            "proxy_url": os.getenv("OPENAI_PROXY_URL", ""),
         },
         "google": {
             "api_key": os.getenv("GOOGLE_API_KEY", ""),
             "model": os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
+            "proxy_url": os.getenv("GOOGLE_PROXY_URL", ""),
         },
     }
 
 def save_config(cfg: dict):
     """将配置保存到 .env 文件。"""
     set_key(env_file, "PROVIDER", cfg.get("provider", "openai"))
-    set_key(env_file, "PROXY_URL", cfg.get("proxy_url", ""))
     if "openai" in cfg:
         set_key(env_file, "OPENAI_API_KEY", cfg["openai"].get("api_key", ""))
         set_key(env_file, "OPENAI_API_BASE", cfg["openai"].get("api_base", ""))
         set_key(env_file, "OPENAI_MODEL", cfg["openai"].get("model", ""))
+        set_key(env_file, "OPENAI_PROXY_URL", cfg["openai"].get("proxy_url", ""))
     if "google" in cfg:
         set_key(env_file, "GOOGLE_API_KEY", cfg["google"].get("api_key", ""))
         set_key(env_file, "GOOGLE_MODEL", cfg["google"].get("model", ""))
+        set_key(env_file, "GOOGLE_PROXY_URL", cfg["google"].get("proxy_url", ""))
 
 class LLMClient:
     """一个统一的、简化的LLM客户端，支持OpenAI兼容接口和Google Gemini，并统一处理代理。"""
     def __init__(self, config: dict):
         self.full_config = config
         self.provider = config.get("provider", "openai")
-        proxy_url = config.get("proxy_url")
-        provider_cfg = config.get(self.provider)
+        provider_cfg = config.get(self.provider, {})
+        
+        proxy_url = provider_cfg.get("proxy_url")
         self.model = provider_cfg.get("model")
         api_key = provider_cfg.get("api_key")
 
@@ -59,6 +63,12 @@ class LLMClient:
             if proxy_url:
                 os.environ["HTTP_PROXY"] = proxy_url
                 os.environ["HTTPS_PROXY"] = proxy_url
+            else:
+                # Unset proxy if it's not provided, to avoid using old env vars
+                if "HTTP_PROXY" in os.environ:
+                    del os.environ["HTTP_PROXY"]
+                if "HTTPS_PROXY" in os.environ:
+                    del os.environ["HTTPS_PROXY"]
             self.client = genai.Client(api_key=api_key)
         else:  # openai 兼容
             http_client = httpx.Client(proxy=proxy_url or None)
@@ -87,158 +97,6 @@ class LLMClient:
             )
             return response.choices[0].message.content
 
-# --- Prompt 模板 ---
-ROLE_INSTRUCTION = "你是一位资深的专利代理师，擅长撰写结构清晰、逻辑严谨的专利申请文件。你的回答必须严格遵循格式要求，直接输出内容，不包含任何解释性文字。"
-
-
-# 0. 分析代理
-PROMPT_ANALYZE = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务描述：请深入、细致地阅读并分析以下技术交底材料，将其拆解并提炼成一个结构化的、内容详实的JSON对象。\n"
-    "**重要：请直接返回有效的JSON对象，不要包含任何解释性文字、前言或代码块标记。你的回答必须以 `{{\n` 开头，并以 `}}` 结尾。**\n"
-    "JSON结构应包含以下字段：\n"
-    "1. `background_technology`: 详细描述与本发明最相关的现有技术（Prior Art）。说明这些技术通常是如何工作的，以及它们的应用领域，为理解问题提供充分的背景。\n"
-    "2. `problem_statement`: 基于上述背景技术，清晰、具体地阐述现有技术中存在的一个或多个关键问题、缺陷或技术痛点。请分析这些问题为何会成为障碍，例如导致效率低下、成本高昂、功能受限或用户体验不佳等。\n"
-    "3. `core_inventive_concept`: 提炼出发明区别于现有技术的**本质性创新点**。这不仅仅是一个功能，而是一种新的技术思想、工作原理或系统架构。请用几句话解释这个核心思想是什么，以及它是如何从根本上解决上述问题的。\n"
-    "4. `technical_solution_summary`: 概述为实现上述创新点所提出的完整技术方案。应描述该方案的**整体架构、主要工作流程或关键方法步骤**，清晰地展现各个部分是如何协同工作以实现发明目的的。\n"
-    "5. `key_components_or_steps`: 以JSON对象列表的形式，列出实现技术方案所需的**所有关键物理组件或核心工艺步骤**。每个对象应包含`name`（组件/步骤名称）和`function`（该组件/步骤在本方案中的具体作用和目的）两个字段。示例：`[{{\"name\": \"组件A\", \"function\": \"负责接收原始信号并进行初步滤波。\"}}]`。\n"
-    "6. `achieved_effects`: **(格式要求：单一字符串)** 与现有技术进行对比，将本发明能够带来的所有具体、可量化或可验证的有益效果，合并成一个单一的字符串。每个效果点作为独立的一段，用换行符分隔。例如：\"处理速度提升30%，有效缩短了单次操作时间。\\n能耗降低50%，符合绿色节能要求。\\n识别准确率从85%提高到98%，大幅减少了误判率。\"\n\n"
-    "技术交底材料：\n{user_input}"
-)
-# 1. 发明名称代理
-PROMPT_TITLE = (
-    f"{ROLE_INSTRUCTION}\n"
-    "请根据以下核心创新点与技术方案内容，生成3个不超过25字的中文发明名称建议。\n"
-    "要求：\n"
-    "1. 准确体现技术内容，突出创新点\n"
-    "2. 命名风格需符合中国专利申请规范（避免口语化、广告词、过度抽象）\n"
-    "**输出格式为JSON数组：例如 [\"名称一\", \"名称二\", \"名称三\"]，不得包含解释或注释。**\n\n"
-    "核心创新点：{core_inventive_concept}\n"
-    "技术方案概述：{technical_solution_summary}"
-)
-
-
-PROMPT_BACKGROUND_PROBLEM = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：请根据以下技术问题概要，撰写一段逻辑严密、论证充分的“现有技术存在的问题”段落。\n"
-    "要求：\n"
-    "1. **问题深化**：清晰地指出当前技术存在的具体缺陷或不足。\n"
-    "2. **原因分析**：深入分析导致这些缺陷产生的技术性或结构性根本原因。\n"
-    "3. **影响阐述**：具体说明这些缺陷对设备性能、生产成本、用户体验或安全可靠性等方面造成的实际不良影响。\n"
-    "4. **语言专业**：使用客观、严谨的技术术语，避免主观臆断和夸张修辞。\n"
-    "**请直接输出段落内容，不要包含标题或任何说明文字。**\n\n"
-    "技术问题概要：{problem_statement}"
-)
-
-PROMPT_BACKGROUND_CONTEXT = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：请根据以下对现有技术的描述，撰写“2.1 对最接近的现有技术状况的分析说明”段落。\n"
-    "要求：\n"
-    "1. **客观描述**：首先客观、清晰地介绍与本发明最相关的一至两种主流现有技术方案、其基本工作原理和应用场景。\n"
-    "2. **逻辑铺垫**：在描述的基础上，巧妙地引出或暗示这些现有技术方案在特定方面存在的固有局限性或技术瓶颈，为下一节“现有技术存在的问题”做好铺垫。\n"
-    "**请直接输出段落内容，不包含标题或其他标识。**\n\n"
-    "现有技术详细描述：\n{background_technology}\n"
-    "现有技术存在的问题：\n{background_problem}"
-)
-
-PROMPT_INVENTION_PURPOSE = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：请将以下“现有技术存在的问题”内容，改写为一段清晰、明确的“3.1 发明目的”段落。\n"
-    "要求：\n"
-    "1. **正向转换**：将对问题的批判性描述，转换为旨在解决这些问题的正面陈述。\n"
-    "2. **严格对应**：确保提出的每一个发明目的都直接、精确地对应于“现有技术存在的问题”中指出的一个或多个具体缺陷。\n"
-    "3. **标准句式**：以“鉴于现有技术存在的上述缺陷，本发明的目的在于提供一种...”或“为了解决现有技术中...的问题，本发明提供...”等标准句式开头。\n"
-    "**请直接输出段落内容，不包含标题。**\n\n"
-    "现有技术存在的问题：\n{background_problem}"
-)
-
-PROMPT_INVENTION_SOLUTION_POINTS = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：请根据以下技术方案的核心组成及功能，提炼出3-5个最能体现本发明技术构思的核心技术特征要点。\n"
-    "要求：\n"
-    "1. **特征化描述**：每个要点应高度概括一项关键技术特征，清晰描述“什么组件/步骤”以及它“执行了什么关键功能”或“达到了什么技术目的”。\n"
-    "2. **逻辑递进**：这些要点组合起来应能逻辑地呈现出整个技术方案的轮廓。\n"
-    "3. **语言精炼**：语言专业、精炼，避免口语化表达。\n"
-    "**输出格式为JSON数组，例如：[\"特征一：一种包含A模块的系统，所述A模块用于...\", \"特征二：一种方法，包括步骤B，所述步骤B用于...\"]，不得包含说明文字。**\n\n"
-    "技术方案概述：{technical_solution_summary}\n"
-    "关键组件/步骤及其功能清单：\n{key_components_or_steps}"
-)
-
-PROMPT_INVENTION_SOLUTION_DETAIL = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：根据以下材料，撰写一段结构清晰、内容详尽、技术深度充足的“3.2 技术解决方案”段落。\n"
-    "要求：\n"
-    "1. **结构化叙述**：\n"
-    "   a. **总体阐述**：首先用一两句话概括本发明的整体技术方案，点明其要解决的核心问题。\n"
-    "   b. **分部详述**：逐一详细描述每个关键组件或步骤。不仅要说明“是什么”，更要深入解释“为什么”这样设计以及它“如何”与其他部分交互协同工作。\n"
-    "   c. **总结升华**：最后总结这些组成部分如何共同作用，完整地实现了发明的总体目的。\n"
-    "2. **深度与细节**：\n"
-    "   a. **技术原理**：必须结合具体技术内容，引入并解释相关的物理原理、数学公式（使用LaTeX格式，如`$$F=ma$$`）或算法伪代码，以支撑技术方案的合理性。\n"
-    "   b. **量化参数**：尽可能给出具体的、合理的参数范围、材料选型、信号特征或操作条件，使方案具体化，具备可实施性。\n"
-    "3. **紧扣创新**：全文应围绕核心创新点展开，清晰地体现出本方案与现有技术的本质区别。\n"
-    "**直接输出详细的“技术解决方案”段落内容，不要包含标题。**\n\n"
-    "核心创新点：{core_inventive_concept}\n"
-    "技术方案概述：{technical_solution_summary}\n"
-    "关键组件/步骤及其功能清单：\n{key_components_or_steps}"
-)
-
-PROMPT_INVENTION_EFFECTS = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：请撰写一段论证严谨、说服力强的“3.3 技术效果”段落。\n"
-    "要求：\n"
-    "1. **因果论证**：以分点形式列出有益效果。对于每一点，都必须遵循“声明效果 -> 关联特征 -> 对比现有技术”的逻辑。清晰阐述是**由于**本方案中的哪个/哪些技术特征，才带来了这项有益效果，并与现有技术进行对比，突出优势。\n"
-    "2. **具体可信**：效果描述应尽可能具体、量化（引用`achieved_effects`中的数据），避免使用“更好”、“更快”等模糊词汇。\n"
-    "3. **标准开头**：段落以“与现有技术相比，本发明由于采用了上述技术方案，至少具有以下一项或多项有益效果：”或类似表述开始。\n"
-    "**请直接输出段落内容，不包含标题。**\n\n"
-    "本发明的技术方案要点：\n{solution_points_str}\n"
-    "本发明的有益效果概述：{achieved_effects}"
-)
-
-
-PROMPT_MERMAID_IDEAS = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：基于以下“技术解决方案”，构思出最能清晰、准确地展示发明点的附图列表。\n"
-    "要求：\n"
-    "1. **识别核心**: 准确识别技术方案中的关键流程、核心组件、或创新结构。\n"
-    "2. **多样化视角**: 提供至少2个、至多5个附图构思，应至少包含一个总体流程/结构图，以及若干个关键模块的细节图。\n"
-    "3. **清晰描述**: 每个构思需包含一个简洁的`title`（如“系统总体架构图”）和一个`description`（说明该图旨在展示什么，帮助绘图AI理解意图）。\n"
-    "**重要：直接返回一个包含构思对象的JSON数组。示例：`[{{\"title\": \"构思一标题\", \"description\": \"构思一描述\"}}]`**\n\n"
-    "技术解决方案详细描述：\n{invention_solution_detail}"
-)
-
-PROMPT_MERMAID_CODE = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：根据“技术解决方案”的完整描述和指定的“附图构思”，生成一份符合 Mermaid 语法规范的流程图代码。\n"
-    "\n"
-    "【输出要求】\n"
-    "1. **准确表达技术内容**：图结构必须准确反映附图构思中的功能流程或结构关系。\n"
-    "2. **选择合适的图类型**：根据内容选择最合适的 Mermaid 图类型，例如 `graph TD`, `flowchart TD`, `sequenceDiagram`, `classDiagram`, `stateDiagram` 等。\n"
-    "3. **严格 Mermaid 语法规范，避免一切语法错误**，特别注意以下禁止事项：\n"
-    "   - **禁止公式**：不得使用 `$...$`、`\\frac`、`\\sum`、上标、下标、希腊字母等任何数学表达式；请以通俗文字表达；\n"
-    "   - **禁止注释**：不得在任何图中插入注释（如 `// 注释`、`# 注释`、`% 注释` 等），也不得夹在图结构行末；\n"
-    "   - **禁止节点中嵌套 `[]` 或引号**：所有节点标签必须使用英文双引号包裹，内部不能再使用中括号；\n"
-    "   - **禁止节点内公式、代码、特殊字符**：不使用 `*`, `{{}}`, `[]`, `<>` 中的嵌套结构，内容尽量简单明了；\n"
-    "4. **节点标签换行规范**：\n"
-    "   - 若需换行，使用 `<br>` 标签（仅在标签中使用）；\n"
-    "   - 节点格式统一为 A[\"内容\"]；始终使用双引号包裹内容；\n"
-    "5. **输出格式严格要求**：\n"
-    "   - 仅返回 Mermaid 图代码正文；\n"
-    "   - 不得包含 Markdown 代码块标记（如 ```mermaid）；\n"
-    "   - 不添加任何非 Mermaid 内容或额外解释说明。\n"
-    "\n"
-    "附图构思标题：{title}\n"
-    "附图构思描述：{description}\n\n"
-    "技术解决方案全文参考：\n{invention_solution_detail}"
-)
-
-
-PROMPT_IMPLEMENTATION_POINT = (
-    f"{ROLE_INSTRUCTION}\n"
-    "任务：你正在撰写“五、具体实施方式”章节。列举实现发明的具体实例，至少举出一项明确的可操作的本发明的具体实例从而将本发明的发明内容部分的实现过程体现出来。\n"
-    "要求：描述应具体化，可包括但不限于：具体参数、组件选型、操作流程、工作原理等，使本领域技术人员能够照此实施。\n"
-    "**直接输出针对该要点的具体实施描述段落，不要包含标题或编号。**\n\n"
-    "当前要详细阐述的技术要点：\n{point}"
-)
 
 # --- 新的工作流与UI章节映射 ---
 UI_SECTION_ORDER = ["title", "background", "invention", "drawings", "implementation"]
@@ -272,14 +130,14 @@ UI_SECTION_CONFIG = {
 }
 
 WORKFLOW_CONFIG = {
-    "title_options": {"prompt": PROMPT_TITLE, "json_mode": True, "dependencies": ["core_inventive_concept", "technical_solution_summary"]},
-    "background_problem": {"prompt": PROMPT_BACKGROUND_PROBLEM, "json_mode": False, "dependencies": ["problem_statement"]},
-    "background_context": {"prompt": PROMPT_BACKGROUND_CONTEXT, "json_mode": False, "dependencies": ["background_problem"]},
-    "invention_purpose": {"prompt": PROMPT_INVENTION_PURPOSE, "json_mode": False, "dependencies": ["background_problem"]},
-    "solution_points": {"prompt": PROMPT_INVENTION_SOLUTION_POINTS, "json_mode": True, "dependencies": ["technical_solution_summary", "key_components_or_steps"]},
-    "invention_solution_detail": {"prompt": PROMPT_INVENTION_SOLUTION_DETAIL, "json_mode": False, "dependencies": ["core_inventive_concept", "technical_solution_summary", "key_components_or_steps"]},
-    "invention_effects": {"prompt": PROMPT_INVENTION_EFFECTS, "json_mode": False, "dependencies": ["solution_points", "achieved_effects"]},
-    "implementation_details": {"prompt": PROMPT_IMPLEMENTATION_POINT, "json_mode": False, "dependencies": ["solution_points"]},
+    "title_options": {"prompt": prompts.PROMPT_TITLE, "json_mode": True, "dependencies": ["core_inventive_concept", "technical_solution_summary"]},
+    "background_problem": {"prompt": prompts.PROMPT_BACKGROUND_PROBLEM, "json_mode": False, "dependencies": ["problem_statement"]},
+    "background_context": {"prompt": prompts.PROMPT_BACKGROUND_CONTEXT, "json_mode": False, "dependencies": ["background_problem"]},
+    "invention_purpose": {"prompt": prompts.PROMPT_INVENTION_PURPOSE, "json_mode": False, "dependencies": ["background_problem"]},
+    "solution_points": {"prompt": prompts.PROMPT_INVENTION_SOLUTION_POINTS, "json_mode": True, "dependencies": ["technical_solution_summary", "key_components_or_steps"]},
+    "invention_solution_detail": {"prompt": prompts.PROMPT_INVENTION_SOLUTION_DETAIL, "json_mode": False, "dependencies": ["core_inventive_concept", "technical_solution_summary", "key_components_or_steps"]},
+    "invention_effects": {"prompt": prompts.PROMPT_INVENTION_EFFECTS, "json_mode": False, "dependencies": ["solution_points", "achieved_effects"]},
+    "implementation_details": {"prompt": prompts.PROMPT_IMPLEMENTATION_POINT, "json_mode": False, "dependencies": ["solution_points"]},
 }
 
 # --- 状态管理与依赖检查 ---
@@ -300,7 +158,7 @@ def is_stale(ui_key: str) -> bool:
     for dep in UI_SECTION_CONFIG[ui_key]["dependencies"]:
         if dep in timestamps and timestamps[dep] > section_time:
             return True
-    if 'structured_brief' in UI_SECTION_CONFIG[ui_key]["dependencies"]:
+    if 'structured_brief' in UI_SECTION_CONFIG[ui_key]['dependencies']:
         if 'structured_brief' in timestamps and timestamps['structured_brief'] > section_time:
             return True
     return False
@@ -342,18 +200,21 @@ def render_sidebar(config: dict):
         config["provider"] = provider_map[selected_provider_display]
 
         p_cfg = config[config["provider"]]
-        p_cfg["api_key"] = st.text_input("API Key", value=p_cfg.get("api_key", ""), type="password", key=f"{config['provider']}_api_key")
+        p_cfg["api_key"] = st.text_input("API Key", value=p_cfg.get("api_key", ""), type="password", key=f'{config["provider"]}_api_key')
 
         if config["provider"] == "openai":
             p_cfg["api_base"] = st.text_input("API 基础地址", value=p_cfg.get("api_base", ""), key="openai_api_base")
             p_cfg["model"] = st.text_input("模型名称", value=p_cfg.get("model", ""), key="openai_model")
-        else:
+            p_cfg["proxy_url"] = st.text_input(
+                "代理 URL (可选)", value=p_cfg.get("proxy_url", ""),
+                placeholder="http://127.0.0.1:7890", key="openai_proxy_url"
+            )
+        else: # google
             p_cfg["model"] = st.text_input("模型名称", value=p_cfg.get("model", ""), key="google_model")
-
-        config["proxy_url"] = st.text_input(
-            "代理 URL (可选)", value=config.get("proxy_url", ""), 
-            placeholder="http://127.0.0.1:7890"
-        )
+            p_cfg["proxy_url"] = st.text_input(
+                "代理 URL (可选)", value=p_cfg.get("proxy_url", ""),
+                placeholder="http://127.0.0.1:7890", key="google_proxy_url"
+            )
 
         if st.button("保存配置"):
             save_config(config)
@@ -369,7 +230,7 @@ def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str)
         return
 
     # 1. Generate ideas
-    ideas_prompt = PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
+    ideas_prompt = prompts.PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
     try:
         ideas_response_str = llm_client.call([{"role": "user", "content": ideas_prompt}], json_mode=True)
         ideas = json.loads(ideas_response_str.strip())
@@ -387,7 +248,7 @@ def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str)
         idea_title = idea.get('title', f'附图构思 {i+1}')
         idea_desc = idea.get('description', '')
         
-        code_prompt = PROMPT_MERMAID_CODE.format(
+        code_prompt = prompts.PROMPT_MERMAID_CODE.format(
             title=idea_title,
             description=idea_desc,
             invention_solution_detail=invention_solution_detail
@@ -508,7 +369,7 @@ def main():
         if st.button("🔬 分析并提炼核心要素", type="primary"):
             if user_input:
                 st.session_state.user_input = user_input
-                prompt = PROMPT_ANALYZE.format(user_input=user_input)
+                prompt = prompts.PROMPT_ANALYZE.format(user_input=user_input)
                 with st.spinner("正在调用分析代理，请稍候..."):
                     try:
                         response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=True)
@@ -621,7 +482,7 @@ def main():
                                 with col2:
                                     if st.button(f"🔄 重新生成此图", key=f"regen_drawing_{i}"):
                                         with st.spinner(f"正在重新生成附图: {drawing.get('title', '无标题')}..."):
-                                            code_prompt = PROMPT_MERMAID_CODE.format(
+                                            code_prompt = prompts.PROMPT_MERMAID_CODE.format(
                                                 title=drawing.get('title', ''),
                                                 description=drawing.get('description', ''),
                                                 invention_solution_detail=invention_solution_detail
