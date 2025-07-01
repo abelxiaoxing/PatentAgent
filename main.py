@@ -8,7 +8,6 @@ from typing import List, Dict, Any
 from google import genai
 from dotenv import load_dotenv, find_dotenv, set_key
 import time
-import base64
 import streamlit.components.v1 as components
 
 # 加载 .env 文件中的环境变量
@@ -103,7 +102,7 @@ PROMPT_ANALYZE = (
     "3. `core_inventive_concept`: 提炼出发明区别于现有技术的**本质性创新点**。这不仅仅是一个功能，而是一种新的技术思想、工作原理或系统架构。请用几句话解释这个核心思想是什么，以及它是如何从根本上解决上述问题的。\n"
     "4. `technical_solution_summary`: 概述为实现上述创新点所提出的完整技术方案。应描述该方案的**整体架构、主要工作流程或关键方法步骤**，清晰地展现各个部分是如何协同工作以实现发明目的的。\n"
     "5. `key_components_or_steps`: 以JSON对象列表的形式，列出实现技术方案所需的**所有关键物理组件或核心工艺步骤**。每个对象应包含`name`（组件/步骤名称）和`function`（该组件/步骤在本方案中的具体作用和目的）两个字段。示例：`[{{\"name\": \"组件A\", \"function\": \"负责接收原始信号并进行初步滤波。\"}}]`。\n"
-    "6. `achieved_effects`: 与现有技术进行对比，详细列出本发明能够带来的**具体、可量化或可验证的有益效果**。例如：'处理速度提升30%'、'能耗降低50%'、'识别准确率从85%提高到98%'、'结构简化，减少了两个必要部件'等。避免空泛的描述。\n\n"
+    "6. `achieved_effects`: **(格式要求：单一字符串)** 与现有技术进行对比，将本发明能够带来的所有具体、可量化或可验证的有益效果，合并成一个单一的字符串。每个效果点作为独立的一段，用换行符分隔。例如：\"处理速度提升30%，有效缩短了单次操作时间。\\n能耗降低50%，符合绿色节能要求。\\n识别准确率从85%提高到98%，大幅减少了误判率。\"\n\n"
     "技术交底材料：\n{user_input}"
 )
 # 1. 发明名称代理
@@ -218,7 +217,7 @@ PROMPT_MERMAID_CODE = (
     "   - **禁止公式**：不得使用 `$...$`、`\\frac`、`\\sum`、上标、下标、希腊字母等任何数学表达式；请以通俗文字表达；\n"
     "   - **禁止注释**：不得在任何图中插入注释（如 `// 注释`、`# 注释`、`% 注释` 等），也不得夹在图结构行末；\n"
     "   - **禁止节点中嵌套 `[]` 或引号**：所有节点标签必须使用英文双引号包裹，内部不能再使用中括号；\n"
-    "   - **禁止节点内公式、代码、特殊字符**：不使用 `*`, `{}`, `[]`, `< >` 中的嵌套结构，内容尽量简单明了；\n"
+    "   - **禁止节点内公式、代码、特殊字符**：不使用 `*`, `{{}}`, `[]`, `<>` 中的嵌套结构，内容尽量简单明了；\n"
     "4. **节点标签换行规范**：\n"
     "   - 若需换行，使用 `<br>` 标签（仅在标签中使用）；\n"
     "   - 节点格式统一为 A[\"内容\"]；始终使用双引号包裹内容；\n"
@@ -235,7 +234,7 @@ PROMPT_MERMAID_CODE = (
 
 PROMPT_IMPLEMENTATION_POINT = (
     f"{ROLE_INSTRUCTION}\n"
-    "任务：你正在撰写“五、具体实施方式”章节。请针对以下这一个技术要点，提供一个详细、可操作的具体实现方式描述。\n"
+    "任务：你正在撰写“五、具体实施方式”章节。列举实现发明的具体实例，至少举出一项明确的可操作的本发明的具体实例从而将本发明的发明内容部分的实现过程体现出来。\n"
     "要求：描述应具体化，可包括但不限于：具体参数、组件选型、操作流程、工作原理等，使本领域技术人员能够照此实施。\n"
     "**直接输出针对该要点的具体实施描述段落，不要包含标题或编号。**\n\n"
     "当前要详细阐述的技术要点：\n{point}"
@@ -407,10 +406,9 @@ def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str)
     st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
     st.session_state.data_timestamps['drawings'] = time.time()
 
-
 def generate_ui_section(llm_client: LLMClient, ui_key: str):
     """为单个UI章节执行其背后的完整微任务流，并组装最终内容。"""
-    if ui_key == "drawings": # Drawings section has its own logic
+    if ui_key == "drawings": 
         return
 
     brief = st.session_state.structured_brief
@@ -534,21 +532,15 @@ def main():
         brief['background_technology'] = st.text_area("背景技术", value=brief.get('background_technology', ''), on_change=update_brief_timestamp)
         brief['problem_statement'] = st.text_area("待解决的技术问题", value=brief.get('problem_statement', ''), on_change=update_brief_timestamp)
         brief['core_inventive_concept'] = st.text_area("核心创新点", value=brief.get('core_inventive_concept', ''), on_change=update_brief_timestamp)
-        brief['technical_solution_summary'] = st.text_area("技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)
-        
+        brief['technical_solution_summary'] = st.text_area("技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)   
         key_steps_list = brief.get('key_components_or_steps', [])
         if isinstance(key_steps_list, list) and key_steps_list and isinstance(key_steps_list[0], dict):
-            # Format list of dicts into a display string
             key_steps_str = "\n".join([f"{item.get('name', '')}: {item.get('function', '')}" for item in key_steps_list])
         elif isinstance(key_steps_list, list):
-            # If it's already a list of strings (e.g., after an edit), just join
             key_steps_str = "\n".join(key_steps_list)
         else:
-            # Fallback for other types
             key_steps_str = str(key_steps_list)
-
         edited_steps_str = st.text_area("关键组件/步骤清单", value=key_steps_str, on_change=update_brief_timestamp)
-        # Always update the brief with the content from the text area, which is now a list of strings
         brief['key_components_or_steps'] = [line.strip() for line in edited_steps_str.split('\n') if line.strip()]
         brief['achieved_effects'] = st.text_area("有益效果", value=brief.get('achieved_effects', ''), on_change=update_brief_timestamp)
 
@@ -649,8 +641,7 @@ def main():
                                 drawing_key = f"mermaid_{i}"
                                 safe_title = "".join(c for c in drawing.get('title', '') if c.isalnum() or c in (' ', '_')).rstrip()
                                 
-                                escaped_code = drawing["code"].replace("`", "\
-")
+                                escaped_code = drawing["code"].replace("`", "\\`")
 
                                 html_component = f'''
                                     <div id="mermaid-view-{drawing_key}">
@@ -669,7 +660,8 @@ def main():
 
                                         const renderDiagram = async () => {{
                                             try {{
-                                                mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ 'background': 'white' }} }});
+                                                // 将主题从 'base' 修改为 'neutral' 以实现黑白风格
+                                                mermaid.initialize({{ startOnLoad: false, theme: 'neutral' }}); 
                                                 const {{ svg }} = await mermaid.render(`mermaid-svg-${{drawingKey}}`, code);
                                                 outputDiv.innerHTML = svg;
                                             }} catch (e) {{
@@ -683,19 +675,31 @@ def main():
                                                 const svgElement = outputDiv.querySelector('svg');
                                                 if (!svgElement) {{ alert("Diagram not rendered yet."); return; }}
                                                 
+                                                // 确保下载的PNG背景是白色
+                                                svgElement.style.backgroundColor = 'white';
+
                                                 const svgData = new XMLSerializer().serializeToString(svgElement);
                                                 const img = new Image();
                                                 const canvas = document.createElement('canvas');
                                                 const ctx = canvas.getContext('2d');
 
                                                 img.onload = function() {{
-                                                    const scale = 2;
-                                                    const rect = svgElement.getBoundingClientRect();
-                                                    canvas.width = rect.width * scale;
-                                                    canvas.height = rect.height * scale;
+                                                    const scale = 2; 
+                                                    // 使用 SVG 的 viewBox 属性来获取准确尺寸，避免 getBoundingClientRect 的问题
+                                                    const viewBox = svgElement.viewBox.baseVal;
+                                                    const width = viewBox.width;
+                                                    const height = viewBox.height;
+                                                    
+                                                    canvas.width = width * scale;
+                                                    canvas.height = height * scale;
+                                                    
+                                                    // 绘制白色背景
                                                     ctx.fillStyle = 'white';
                                                     ctx.fillRect(0, 0, canvas.width, canvas.height);
+                                                    
+                                                    // 绘制图像
                                                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                                    
                                                     const pngFile = canvas.toDataURL('image/png');
                                                     const downloadLink = document.createElement('a');
                                                     downloadLink.download = pngFileName;
