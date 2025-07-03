@@ -11,6 +11,7 @@ import time
 import streamlit.components.v1 as components
 import prompts
 
+
 # 加载 .env 文件中的环境变量
 env_file = find_dotenv()
 if not env_file:
@@ -64,7 +65,6 @@ class LLMClient:
                 os.environ["HTTP_PROXY"] = proxy_url
                 os.environ["HTTPS_PROXY"] = proxy_url
             else:
-                # Unset proxy if it's not provided, to avoid using old env vars
                 if "HTTP_PROXY" in os.environ:
                     del os.environ["HTTP_PROXY"]
                 if "HTTPS_PROXY" in os.environ:
@@ -81,7 +81,13 @@ class LLMClient:
     def call(self, messages: List[Dict], json_mode: bool = False) -> str:
         """根据提供商调用相应的LLM API"""
         if self.provider == "google":
-            config = {"response_mime_type": "application/json"} if json_mode else {}
+            generation_config_params = {}
+            generation_config_params["temperature"] = 0.1
+            generation_config_params["top_p"] = 0.1
+            if json_mode:
+                generation_config_params["response_mime_type"] = "application/json"
+            config = genai.types.GenerateContentConfig(**generation_config_params)
+            # config = {"response_mime_type": "application/json"} if json_mode else {}
             response = self.client.models.generate_content(
                 model=self.model, 
                 config=config,
@@ -92,15 +98,16 @@ class LLMClient:
             extra_params = {"response_format": {"type": "json_object"}} if json_mode else {}
             response = self.client.chat.completions.create(
                 model=self.model,
+                temperature=0.1,
+                top_p=0.1,
                 messages=messages,
                 **extra_params,
             )
             return response.choices[0].message.content
 
 
-# --- 新的工作流与UI章节映射 ---
+# --- 工作流与UI章节映射 ---
 UI_SECTION_ORDER = ["title", "background", "invention", "drawings", "implementation"]
-
 UI_SECTION_CONFIG = {
     "title": {
         "label": "发明名称",
@@ -119,7 +126,7 @@ UI_SECTION_CONFIG = {
     },
     "drawings": {
         "label": "附图",
-        "workflow_keys": ["drawings"],
+        "workflow_keys": [], # Drawings are handled by a dedicated function
         "dependencies": ["invention"],
     },
     "implementation": {
@@ -146,7 +153,18 @@ def get_active_content(key: str) -> Any:
     if f"{key}_versions" not in st.session_state or not st.session_state[f"{key}_versions"]:
         return None
     active_index = st.session_state.get(f"{key}_active_index", 0)
-    return st.session_state[f"{key}_versions"][active_index]
+    version_data = st.session_state[f"{key}_versions"][active_index]
+    
+    # Handle old string-based versions for backward compatibility
+    if isinstance(version_data, str):
+        return version_data
+    # Handle new dictionary-based versions
+    if isinstance(version_data, dict):
+        return version_data.get("active_content")
+    # Handle lists (like for drawings)
+    if isinstance(version_data, list):
+        return version_data
+    return None
 
 def is_stale(ui_key: str) -> bool:
     """检查某个UI章节是否因其依赖项更新而过时。"""
@@ -156,7 +174,9 @@ def is_stale(ui_key: str) -> bool:
     
     section_time = timestamps[ui_key]
     for dep in UI_SECTION_CONFIG[ui_key]["dependencies"]:
-        if dep in timestamps and timestamps[dep] > section_time:
+        # Need to handle the case where the dependency itself is complex
+        dep_timestamp = timestamps.get(dep)
+        if dep_timestamp and dep_timestamp > section_time:
             return True
     if 'structured_brief' in UI_SECTION_CONFIG[ui_key]['dependencies']:
         if 'structured_brief' in timestamps and timestamps['structured_brief'] > section_time:
@@ -176,6 +196,11 @@ def initialize_session_state():
         st.session_state.structured_brief = {}
     if "data_timestamps" not in st.session_state:
         st.session_state.data_timestamps = {}
+    if "globally_refined_draft" not in st.session_state:
+        st.session_state.globally_refined_draft = {}
+    if "refined_version_available" not in st.session_state:
+        st.session_state.refined_version_available = False
+
 
     all_keys = list(UI_SECTION_CONFIG.keys()) + list(WORKFLOW_CONFIG.keys())
     for key in all_keys:
@@ -223,25 +248,29 @@ def render_sidebar(config: dict):
                 del st.session_state.llm_client
             st.rerun()
 
+def clean_mermaid_code(code: str) -> str:
+    """清理Mermaid代码字符串，移除可选的markdown代码块标识。"""
+    cleaned_code = code.strip()
+    if cleaned_code.startswith("```mermaid"):
+        cleaned_code = cleaned_code[len("```mermaid"):].strip()
+    if cleaned_code.endswith("```"):
+        cleaned_code = cleaned_code[:-3].strip()
+    return cleaned_code
+
 def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str):
     """统一生成所有附图：先构思，然后为每个构思生成代码。"""
     if not invention_solution_detail:
-        st.warning("无法生成附图，因为“技术解决方案”内容为空。")
+        st.warning("无法生成附图，因为“发明内容”>“技术解决方案”内容为空。")
         return
 
-    # 1. Generate ideas
-    ideas_prompt = prompts.PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
-    try:
+    with st.spinner("正在为附图构思..."):
+        ideas_prompt = prompts.PROMPT_MERMAID_IDEAS.format(invention_solution_detail=invention_solution_detail)
         ideas_response_str = llm_client.call([{"role": "user", "content": ideas_prompt}], json_mode=True)
         ideas = json.loads(ideas_response_str.strip())
         if not isinstance(ideas, list):
             st.error(f"附图构思返回格式错误，期望列表但得到: {ideas_response_str}")
             return
-    except (json.JSONDecodeError, KeyError) as e:
-        st.error(f"无法解析附图构思列表: {ideas_response_str}")
-        return
 
-    # 2. Generate code for each idea
     drawings = []
     progress_bar = st.progress(0, text="正在生成附图代码...")
     for i, idea in enumerate(ideas):
@@ -255,39 +284,44 @@ def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str)
         )
         code = llm_client.call([{"role": "user", "content": code_prompt}], json_mode=False)
         
+        cleaned_code = clean_mermaid_code(code)
+
         drawings.append({
             "title": idea_title,
             "description": idea_desc,
-            "code": code.strip()
+            "code": cleaned_code
         })
         progress_bar.progress((i + 1) / len(ideas), text=f"已生成附图: {idea_title}")
     
-    # 3. Save to session state
     st.session_state.drawings_versions.append(drawings)
     st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
     st.session_state.data_timestamps['drawings'] = time.time()
 
 def generate_ui_section(llm_client: LLMClient, ui_key: str):
-    """为单个UI章节执行其背后的完整微任务流，并组装最终内容。"""
-    if ui_key == "drawings": 
+    """为单个UI章节执行生成、批判和精炼的完整流程。"""
+    if ui_key == "drawings":
+        invention_solution_detail = get_active_content("invention_solution_detail")
+        generate_all_drawings(llm_client, invention_solution_detail)
         return
 
+    # --- 步骤 1: 生成所有微观组件 ---
     brief = st.session_state.structured_brief
     workflow_keys = UI_SECTION_CONFIG[ui_key]["workflow_keys"]
-
     for micro_key in workflow_keys:
         step_config = WORKFLOW_CONFIG[micro_key]
-        
         format_args = {**brief}
         for dep in step_config["dependencies"]:
-            format_args[dep] = get_active_content(dep) or brief.get(dep)
+            dep_content = get_active_content(dep)
+            if isinstance(dep_content, dict): # Handle complex dependency objects
+                 format_args[dep] = dep_content.get('active_content') or brief.get(dep)
+            else:
+                 format_args[dep] = dep_content or brief.get(dep)
 
         if "key_components_or_steps" in step_config["dependencies"]:
             format_args["key_components_or_steps"] = "\n".join(brief.get('key_components_or_steps', []))
         if micro_key == "invention_effects":
             solution_points = get_active_content("solution_points") or []
             format_args["solution_points_str"] = "\n".join([f"{i+1}. {p}" for i, p in enumerate(solution_points)])
-
         if micro_key == "implementation_details":
             points = get_active_content("solution_points") or []
             details = []
@@ -295,7 +329,6 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
                 point_prompt = step_config["prompt"].format(point=point)
                 detail = llm_client.call([{"role": "user", "content": point_prompt}], json_mode=False)
                 details.append(detail)
-            
             st.session_state[f"{micro_key}_versions"].append(details)
             st.session_state[f"{micro_key}_active_index"] = len(st.session_state[f"{micro_key}_versions"]) - 1
             st.session_state.data_timestamps[micro_key] = time.time()
@@ -303,46 +336,152 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
 
         prompt = step_config["prompt"].format(**format_args)
         response_str = llm_client.call([{"role": "user", "content": prompt}], json_mode=step_config["json_mode"])
-        
         try:
             result = json.loads(response_str.strip()) if step_config["json_mode"] else response_str.strip()
         except json.JSONDecodeError:
             st.error(f"无法解析JSON，模型返回内容: {response_str}")
             return
-        
         st.session_state[f"{micro_key}_versions"].append(result)
         st.session_state[f"{micro_key}_active_index"] = len(st.session_state[f"{micro_key}_versions"]) - 1
         st.session_state.data_timestamps[micro_key] = time.time()
 
-    final_content = ""
+    # --- 步骤 2: 组装初稿 (content_v1) ---
+    content_v1 = ""
     if ui_key == "title":
-        final_content = get_active_content("title_options")
+        title_options = get_active_content("title_options") or []
+        st.session_state.title_versions.extend(title_options)
+        st.session_state.title_active_index = len(st.session_state.title_versions) - 1
+        st.session_state.data_timestamps[ui_key] = time.time()
+        return
     elif ui_key == "background":
-        context = get_active_content("background_context")
-        problem = get_active_content("background_problem")
-        final_content = f"## 2.1 对最接近发明的同类现有技术状况加以分析说明\n{context}\n\n## 2.2 实事求是地指出现有技术存在的问题，尽可能分析存在的原因。\n{problem}"
+        context = get_active_content("background_context") or ""
+        problem = get_active_content("background_problem") or ""
+        content_v1 = f"## 2.1 对最接近发明的同类现有技术状况加以分析说明\n{context}\n\n## 2.2 实事求是地指出现有技术存在的问题，尽可能分析存在的原因。\n{problem}"
     elif ui_key == "invention":
-        purpose = get_active_content("invention_purpose")
-        solution_detail = get_active_content("invention_solution_detail")
-        effects = get_active_content("invention_effects")
-        final_content = f"## 3.1 发明目的\n{purpose}\n\n## 3.2 技术解决方案\n{solution_detail}\n\n## 3.3 技术效果\n{effects}"
+        purpose = get_active_content("invention_purpose") or ""
+        solution_detail = get_active_content("invention_solution_detail") or ""
+        effects = get_active_content("invention_effects") or ""
+        content_v1 = f"## 3.1 发明目的\n{purpose}\n\n## 3.2 技术解决方案\n{solution_detail}\n\n## 3.3 技术效果\n{effects}"
     elif ui_key == "implementation":
         details = get_active_content("implementation_details") or []
-        final_content = "\n\n".join([f"{i+1}. {detail}" for i, detail in enumerate(details)])
+        content_v1 = "\n".join([f"{i+1}. {detail}" for i, detail in enumerate(details)])
 
-    if ui_key == "title":
-        st.session_state.title_versions.extend(final_content)
-        st.session_state.title_active_index = len(st.session_state.title_versions) - 1
-    else:
-        st.session_state[f"{ui_key}_versions"].append(final_content)
-        st.session_state[f"{ui_key}_active_index"] = len(st.session_state[f"{ui_key}_versions"]) - 1
-    
+    if not content_v1.strip():
+        st.warning(f"无法为 {UI_SECTION_CONFIG[ui_key]['label']} 生成初稿，依赖项内容为空。")
+        return
+
+    # --- 步骤 3: 内部批判 (Self-Criticism) ---
+    active_content = content_v1
+    critic_result = None
+    with st.spinner(f"“批判家”正在审查 {UI_SECTION_CONFIG[ui_key]['label']}..."):
+        critic_prompt = prompts.PROMPT_CRITIC_SECTION.format(
+            section_content=content_v1,
+            structured_brief=json.dumps(st.session_state.structured_brief, ensure_ascii=False, indent=2)
+        )
+        try:
+            critic_response_str = llm_client.call([{"role": "user", "content": critic_prompt}], json_mode=True)
+            critic_result = json.loads(critic_response_str.strip())
+        except (json.JSONDecodeError, KeyError) as e:
+            st.error(f"无法解析批判家返回的JSON: {e}\n原始返回: {critic_response_str}")
+
+    # --- 步骤 4: 决策与迭代 ---
+    if critic_result and not critic_result.get("passed", True):
+        with st.spinner(f"根据批判家意见，正在自动精炼 {UI_SECTION_CONFIG[ui_key]['label']}..."):
+            feedback_str = "\n".join(critic_result.get("feedback", ["无具体反馈。"]))
+            refine_prompt = prompts.PROMPT_REFINE_SECTION.format(
+                structured_brief=json.dumps(st.session_state.structured_brief, ensure_ascii=False, indent=2),
+                content_v1=content_v1,
+                feedback=feedback_str
+            )
+            try:
+                content_v2 = llm_client.call([{"role": "user", "content": refine_prompt}], json_mode=False)
+                active_content = content_v2.strip()
+                st.success(f"{UI_SECTION_CONFIG[ui_key]['label']} 已自动精炼！")
+            except Exception as e:
+                st.error(f"自动精炼失败: {e}")
+    elif critic_result:
+        st.success(f"{UI_SECTION_CONFIG[ui_key]['label']} 初稿质量达标！")
+
+    # --- 步骤 5: 保存最终版本 ---
+    new_version = {
+        "active_content": active_content,
+        "initial_draft": content_v1,
+        "critic_feedback": critic_result
+    }
+    st.session_state[f"{ui_key}_versions"].append(new_version)
+    st.session_state[f"{ui_key}_active_index"] = len(st.session_state[f"{ui_key}_versions"]) - 1
     st.session_state.data_timestamps[ui_key] = time.time()
 
+def run_global_refinement(llm_client: LLMClient):
+    """迭代所有章节，并根据全局上下文和原始生成要求进行重构和润色。"""
+    st.session_state.globally_refined_draft = {}
+    initial_draft_content = {key: get_active_content(key) for key in UI_SECTION_ORDER}
+
+    # 构建一个映射，用于查找每个UI章节对应的原始生成提示
+    # 这是一个简化的映射，实际应用中可能需要更复杂的逻辑来组合提示
+    prompt_map = {
+        "background": [prompts.PROMPT_BACKGROUND_CONTEXT, prompts.PROMPT_BACKGROUND_PROBLEM],
+        "invention": [prompts.PROMPT_INVENTION_PURPOSE, prompts.PROMPT_INVENTION_SOLUTION_DETAIL, prompts.PROMPT_INVENTION_EFFECTS],
+        "implementation": [prompts.PROMPT_IMPLEMENTATION_POINT]
+        # "title" 是JSON列表，不适合此重构流程
+    }
+
+    with st.status("正在执行全局重构与润色...", expanded=True) as status:
+        for target_key in UI_SECTION_ORDER:
+            if target_key in ['drawings', 'title']: # 跳过附图和标题
+                st.session_state.globally_refined_draft[target_key] = initial_draft_content.get(target_key)
+                continue
+            
+            status.update(label=f"正在重构与润色: {UI_SECTION_CONFIG[target_key]['label']}...")
+            
+            # 1. 构建全局上下文
+            global_context_parts = []
+            for key, content in initial_draft_content.items():
+                if key != target_key:
+                    label = UI_SECTION_CONFIG[key]['label']
+                    processed_content = ""
+                    if key == 'title':
+                        processed_content = content or ""
+                    elif key == 'drawings' and isinstance(content, list):
+                        processed_content = "附图列表:\n" + "\n".join([f"- {d.get('title')}: {d.get('description')}" for d in content])
+                    elif isinstance(content, str):
+                        processed_content = content
+                    
+                    if processed_content:
+                        global_context_parts.append(f"--- {label} ---\n{processed_content}")
+            
+            global_context = "\n".join(global_context_parts)
+            target_content = initial_draft_content.get(target_key, "")
+
+            # 2. 获取原始生成要求
+            original_prompts = prompt_map.get(target_key, [])
+            original_generation_prompt = "\n\n---\n\n".join(original_prompts)
+            if not original_generation_prompt:
+                 st.warning(f"未找到 {UI_SECTION_CONFIG[target_key]['label']} 的原始生成指令，将仅基于全局上下文进行润色。")
+
+
+            # 3. 调用新的全局重构润色Prompt
+            refine_prompt = prompts.PROMPT_GLOBAL_RESTRUCTURE_AND_POLISH.format(
+                global_context=global_context,
+                target_section_name=UI_SECTION_CONFIG[target_key]['label'],
+                target_section_content=target_content,
+                original_generation_prompt=original_generation_prompt
+            )
+            
+            try:
+                refined_content = llm_client.call([{"role": "user", "content": refine_prompt}], json_mode=False)
+                st.session_state.globally_refined_draft[target_key] = refined_content.strip()
+            except Exception as e:
+                st.error(f"全局重构章节 {UI_SECTION_CONFIG[target_key]['label']} 失败: {e}")
+                st.session_state.globally_refined_draft[target_key] = target_content
+
+        status.update(label="✅ 全局重构与润色完成！", state="complete")
+    st.session_state.refined_version_available = True
+
 def main():
-    st.set_page_config(page_title="智能专利撰写助手 v3", layout="wide", page_icon="📝")
-    st.title("📝 智能专利申请书撰写助手 v3")
-    st.caption("附图流程已升级：一键生成初稿时将自动构思并生成全套附图。")
+    st.set_page_config(page_title="智能专利撰写助手 v4", layout="wide", page_icon="📝")
+    st.title("📝 智能专利申请书撰写助手 v4")
+    st.caption("新功能：生成时进行自我批判与修正，并支持全局回顾精炼。")
 
     initialize_session_state()
     config = st.session_state.config
@@ -353,7 +492,7 @@ def main():
         st.warning("请在左侧边栏配置并保存您的 API Key。")
         st.stop()
 
-    if 'llm_client' not in st.session_state:
+    if 'llm_client' not in st.session_state or st.session_state.llm_client.full_config != st.session_state.config:
         st.session_state.llm_client = LLMClient(st.session_state.config)
     llm_client = st.session_state.llm_client
 
@@ -393,14 +532,17 @@ def main():
         brief['background_technology'] = st.text_area("背景技术", value=brief.get('background_technology', ''), on_change=update_brief_timestamp)
         brief['problem_statement'] = st.text_area("待解决的技术问题", value=brief.get('problem_statement', ''), on_change=update_brief_timestamp)
         brief['core_inventive_concept'] = st.text_area("核心创新点", value=brief.get('core_inventive_concept', ''), on_change=update_brief_timestamp)
-        brief['technical_solution_summary'] = st.text_area("技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)   
-        key_steps_list = brief.get('key_components_or_steps', [])
-        if isinstance(key_steps_list, list) and key_steps_list and isinstance(key_steps_list[0], dict):
-            key_steps_str = "\n".join([f"{item.get('name', '')}: {item.get('function', '')}" for item in key_steps_list])
-        elif isinstance(key_steps_list, list):
-            key_steps_str = "\n".join(key_steps_list)
+        brief['technical_solution_summary'] = st.text_area("技术方案概述", value=brief.get('technical_solution_summary', ''), on_change=update_brief_timestamp)
+        
+        key_components = brief.get('key_components_or_steps', [])
+        processed_steps = []
+        # Defensively process the list to handle dicts like [{'step': '...'}] or simple strings.
+        if key_components and isinstance(key_components[0], dict):
+            processed_steps = [str(list(item.values())[0]) for item in key_components if item and item.values()]
         else:
-            key_steps_str = str(key_steps_list)
+            processed_steps = [str(item) for item in key_components]
+        key_steps_str = "\n".join(processed_steps)
+
         edited_steps_str = st.text_area("关键组件/步骤清单", value=key_steps_str, on_change=update_brief_timestamp)
         brief['key_components_or_steps'] = [line.strip() for line in edited_steps_str.split('\n') if line.strip()]
         brief['achieved_effects'] = st.text_area("有益效果", value=brief.get('achieved_effects', ''), on_change=update_brief_timestamp)
@@ -408,19 +550,9 @@ def main():
         col1, col2, col3 = st.columns([2,2,1])
         if col1.button("🚀 一键生成初稿", type="primary"):
             with st.status("正在为您生成完整专利初稿...", expanded=True) as status:
-                # Generate text sections first
                 for key in UI_SECTION_ORDER:
-                    if key == 'drawings': 
-                        continue
                     status.update(label=f"正在生成: {UI_SECTION_CONFIG[key]['label']}...")
                     generate_ui_section(llm_client, key)
-                
-                # Then, generate all drawings based on the invention content
-                status.update(label="正在构思并生成全套附图...")
-                invention_solution_detail = get_active_content("invention_solution_detail")
-                if invention_solution_detail:
-                    generate_all_drawings(llm_client, invention_solution_detail)
-                
                 status.update(label="✅ 所有章节生成完毕！", state="complete")
             st.session_state.stage = "writing"
             st.rerun()
@@ -460,16 +592,18 @@ def main():
             with st.expander(expander_label, expanded=is_expanded):
                 # --- 特殊处理附图章节 ---
                 if key == 'drawings':
-                    invention_solution_detail = get_active_content("invention_solution_detail")
-                    if not invention_solution_detail:
-                        st.info("请先生成“发明内容”章节中的“技术解决方案”。")
+                    invention_content = get_active_content("invention")
+                    if not invention_content:
+                        st.info("请先生成“发明内容”章节。")
                         continue
 
-                    if st.button("💡 (重新)构思并生成所有附图"):
+                    invention_solution_detail = get_active_content("invention_solution_detail")
+
+                    if st.button("💡 (重新)构思并生成所有附图", key="regen_all_drawings"):
                         with st.spinner("正在为您重新生成全套附图..."):
                             generate_all_drawings(llm_client, invention_solution_detail)
                             st.rerun()
-
+                    
                     drawings = get_active_content("drawings")
                     if drawings:
                         st.caption("为保证独立性，可对单个附图重新生成，或在下方编辑代码。")
@@ -490,7 +624,7 @@ def main():
                                             new_code = llm_client.call([{"role": "user", "content": code_prompt}], json_mode=False)
                                             
                                             active_drawings = json.loads(json.dumps(get_active_content("drawings")))
-                                            active_drawings[i]["code"] = new_code.strip()
+                                            active_drawings[i]["code"] = clean_mermaid_code(new_code)
                                             
                                             st.session_state.drawings_versions.append(active_drawings)
                                             st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
@@ -594,70 +728,116 @@ def main():
                                     st.session_state.data_timestamps['drawings'] = time.time()
                                     st.rerun()
                     continue
-                
+
                 # --- 常规章节处理 ---
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    deps_met = all(get_active_content(dep) or (dep == 'structured_brief' and st.session_state.structured_brief) for dep in config["dependencies"])
+                    # Handle structured_brief as a special case dependency that is not versioned
+                    deps_met = all(
+                        (st.session_state.get("structured_brief") if dep == "structured_brief" else get_active_content(dep))
+                        for dep in config["dependencies"]
+                    )
                     if deps_met:
                         if st.button(f"🔄 重新生成 {label}" if versions else f"✍️ 生成 {label}", key=f"btn_{key}"):
-                            with st.spinner(f"正在调用 {label} 代理..."):
+                            with st.spinner(f"正在执行 {label} 的生成/精炼流程..."):
                                 generate_ui_section(llm_client, key)
                                 st.session_state.just_generated_key = key
                                 st.rerun()
                     else:
-                        st.info(f"请先生成前置章节。")
+                        st.info(f"请先生成前置章节: {', '.join(config['dependencies'])}")
 
-                with col2:
-                    if len(versions) > 1:
-                        active_idx = st.session_state.get(f"{key}_active_index", 0)
-                        new_idx = st.selectbox(f"选择版本 (共{len(versions)}个)", range(len(versions)), index=active_idx, format_func=lambda x: f"版本 {x+1}", key=f"select_{key}")
-                        if new_idx != active_idx:
-                            st.session_state[f"{key}_active_index"] = new_idx
+                active_idx = st.session_state.get(f"{key}_active_index", 0)
+                if len(versions) > 1:
+                    with col2:
+                        version_labels = [f"版本 {i+1}" for i in range(len(versions))]
+                        new_idx = st.selectbox(f"选择版本", version_labels, index=active_idx, key=f"select_{key}")
+                        active_idx = version_labels.index(new_idx)
+                        if active_idx != st.session_state.get(f"{key}_active_index", 0):
+                            st.session_state[f"{key}_active_index"] = active_idx
                             st.rerun()
 
                 if versions:
+                    active_version_data = versions[active_idx]
                     active_content = get_active_content(key)
-                    
-                    def create_new_version(k, new_content):
-                        st.session_state[f"{k}_versions"].append(new_content)
+
+                    def create_new_version_from_edit(k, new_content):
+                        if k == 'title':
+                            st.session_state[f"{k}_versions"].append(new_content)
+                        else:
+                            new_version_obj = {"active_content": new_content, "initial_draft": new_content, "critic_feedback": None}
+                            st.session_state[f"{k}_versions"].append(new_version_obj)
                         st.session_state[f"{k}_active_index"] = len(st.session_state[f"{k}_versions"]) - 1
                         st.session_state.data_timestamps[k] = time.time()
 
+                    if isinstance(active_version_data, dict) and active_version_data.get("critic_feedback"):
+                        feedback = active_version_data["critic_feedback"]
+                        with st.container(border=True):
+                            score = feedback.get('score', 'N/A')
+                            passed = "✅ 通过" if feedback.get('passed') else "❌ 待改进"
+                            st.markdown(f"**AI 批判家意见:** {passed} (得分: {score})")
+                            if not feedback.get('passed') and feedback.get('feedback'):
+                                for f in feedback['feedback']:
+                                    st.caption(f" - {f}")
+                                if active_version_data['active_content'] != active_version_data['initial_draft']:
+                                    st.markdown("**初稿 (v1):**")
+                                    st.text_area(
+                                        label="v1 draft content",
+                                        value=active_version_data['initial_draft'],
+                                        height=200,
+                                        disabled=True,
+                                        key=f"v1_draft_{key}",
+                                        label_visibility="collapsed"
+                                    )
+                    
                     if key == 'title':
                         edited_content = st.text_input("编辑区", value=active_content, key=f"edit_{key}")
                     else:
                         edited_content = st.text_area("编辑区", value=active_content, height=300, key=f"edit_{key}")
                     
                     if edited_content != active_content:
-                        create_new_version(key, edited_content)
+                        create_new_version_from_edit(key, edited_content)
                         st.rerun()
 
     # --- 阶段四：预览与下载 ---
-    if st.session_state.stage == "writing" and all(get_active_content(key) for key in ["title", "background", "invention", "implementation"]):
-        st.header("Step 4️⃣: 预览与下载")
+    if st.session_state.stage == "writing" and all(get_active_content(key) for key in UI_SECTION_ORDER if key != 'drawings'):
+        st.header("Step 4️⃣: 预览、精炼与下载")
         st.markdown("---")
+
+        if st.button("✨ **全局重构与润色** ✨", type="primary", help="调用顶级专利总编AI，对所有章节进行深度重构、润色和细节补充，确保全文逻辑、深度和专业性达到最佳状态。"):
+            run_global_refinement(llm_client)
+            st.rerun()
+
+        tabs = ["✍️ 初稿"]
+        if st.session_state.get("refined_version_available"):
+            tabs.append("✨ 全局重构润色版")
         
-        title = get_active_content('title')
-        
-        # 构建附图章节
+        selected_tab = st.radio("选择预览版本", tabs, horizontal=True)
+
+        if selected_tab == "✍️ 初稿":
+            draft_data = {key: get_active_content(key) for key in UI_SECTION_ORDER}
+            st.subheader("初稿预览")
+        else: # 全局精炼版
+            draft_data = st.session_state.globally_refined_draft
+            st.subheader("全局重构润色版预览")
+
+        title = draft_data.get('title', '无标题')
         drawings_text = ""
-        drawings = get_active_content("drawings")
-        if drawings:
+        drawings = draft_data.get("drawings")
+        if drawings and isinstance(drawings, list):
             for i, drawing in enumerate(drawings):
-                drawings_text += f"## 附图{i+1}：{drawing['title']}\n"
-                drawings_text += f"```mermaid\n{drawing['code']}\n```\n\n"
+                drawings_text += f"## 附图{i+1}：{drawing.get('title', '')}\n"
+                drawings_text += f"```mermaid\n{drawing.get('code', '')}\n```\n\n"
 
         full_text = (
             f"# 一、发明名称\n{title}\n\n"
-            f"# 二、现有技术（背景技术）\n{get_active_content('background')}\n\n"
-            f"# 三、发明内容\n{get_active_content('invention')}\n\n"
-            f"# 四、附图\n{drawings_text if drawings_text else '（本申请无附图）'}\n\n"
-            f"# 五、具体实施方式\n{get_active_content('implementation')}"
+            f"# 二、现有技术（背景技术）\n{draft_data.get('background', '')}\n\n"
+            f"# 三、发明内容\n{draft_data.get('invention', '')}\n\n"
+            f"# 四、附图说明\n{drawings_text if drawings_text else '（本申请无附图）'}\n\n"
+            f"# 五、具体实施方式\n{draft_data.get('implementation', '')}"
         )
         st.subheader("完整草稿预览")
-        st.markdown(full_text.replace('\n', '\n\n'))
-        st.download_button("📄 下载完整草稿 (.md)", full_text, file_name=f"{title}_patent_draft.md")
+        st.markdown(full_text)
+        st.download_button("📄 下载当前预览版本 (.md)", full_text, file_name=f"{title}_patent_draft.md")
 
 if __name__ == "__main__":
     main()
