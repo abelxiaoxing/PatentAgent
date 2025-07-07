@@ -297,6 +297,70 @@ def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str)
     st.session_state.drawings_active_index = len(st.session_state.drawings_versions) - 1
     st.session_state.data_timestamps['drawings'] = time.time()
 
+@st.cache_data
+def load_mermaid_script():
+    """加载并缓存Mermaid JS脚本文件。"""
+    try:
+        with open("mermaid_script.js", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        st.error("错误：mermaid_script.js 文件未找到。")
+        return ""
+
+def render_mermaid_component(drawing_key: str, drawing: dict, height: int = 450):
+    """渲染单个Mermaid图表组件，使用外部JS文件。"""
+    mermaid_script = load_mermaid_script()
+    if not mermaid_script:
+        return
+
+    safe_title = "".join(c for c in drawing.get('title', '') if c.isalnum() or c in (' ', '_')).rstrip()
+    
+    # 将数据安全地转为JSON字符串
+    code_json = json.dumps(drawing.get("code", ""))
+    safe_title_json = json.dumps(safe_title)
+    drawing_key_json = json.dumps(drawing_key)
+
+    html_component = f'''
+        <div id="mermaid-view-{drawing_key}">
+            <div id="mermaid-output-{drawing_key}" style="background-color: white; padding: 1rem; border-radius: 0.5rem;"></div>
+        </div>
+        <button id="download-btn-{drawing_key}" style="margin-top: 10px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; cursor: pointer;">📥 下载 PNG</button>
+        
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <script>
+            {mermaid_script}
+        </script>
+        <script>
+            // 使用JSON.parse来安全地解码数据
+            const code = JSON.parse({code_json});
+            const safeTitle = JSON.parse({safe_title_json});
+            const drawingKey = JSON.parse({drawing_key_json});
+            
+            // 调用全局渲染函数
+            window.renderMermaid(drawingKey, safeTitle, code);
+        </script>
+    '''
+    components.html(html_component, height=height, scrolling=True)
+
+def build_format_args(dependencies: List[str]) -> Dict[str, Any]:
+    """根据依赖项列表，构建用于格式化Prompt的字典。"""
+    format_args = {**st.session_state.structured_brief}
+    for dep in dependencies:
+        dep_content = get_active_content(dep)
+        if isinstance(dep_content, dict):
+            format_args[dep] = dep_content.get('active_content') or st.session_state.structured_brief.get(dep)
+        else:
+            format_args[dep] = dep_content or st.session_state.structured_brief.get(dep)
+
+    if "key_components_or_steps" in dependencies:
+        format_args["key_components_or_steps"] = "\n".join(st.session_state.structured_brief.get('key_components_or_steps', []))
+    
+    if "solution_points" in dependencies:
+        solution_points = get_active_content("solution_points") or []
+        format_args["solution_points_str"] = "\n".join([f"{i+1}. {p}" for i, p in enumerate(solution_points)])
+
+    return format_args
+
 def generate_ui_section(llm_client: LLMClient, ui_key: str):
     """为单个UI章节执行生成、批判和精炼的完整流程。"""
     if ui_key == "drawings":
@@ -305,23 +369,14 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
         return
 
     # --- 步骤 1: 生成所有微观组件 ---
-    brief = st.session_state.structured_brief
     workflow_keys = UI_SECTION_CONFIG[ui_key]["workflow_keys"]
     for micro_key in workflow_keys:
         step_config = WORKFLOW_CONFIG[micro_key]
-        format_args = {**brief}
-        for dep in step_config["dependencies"]:
-            dep_content = get_active_content(dep)
-            if isinstance(dep_content, dict): # Handle complex dependency objects
-                 format_args[dep] = dep_content.get('active_content') or brief.get(dep)
-            else:
-                 format_args[dep] = dep_content or brief.get(dep)
+        
+        # 使用新的辅助函数构建参数
+        format_args = build_format_args(step_config["dependencies"])
 
-        if "key_components_or_steps" in step_config["dependencies"]:
-            format_args["key_components_or_steps"] = "\n".join(brief.get('key_components_or_steps', []))
-        if micro_key == "invention_effects":
-            solution_points = get_active_content("solution_points") or []
-            format_args["solution_points_str"] = "\n".join([f"{i+1}. {p}" for i, p in enumerate(solution_points)])
+        # 特殊处理 implementation_details 的循环生成
         if micro_key == "implementation_details":
             points = get_active_content("solution_points") or []
             details = []
@@ -417,24 +472,20 @@ def run_global_refinement(llm_client: LLMClient):
     st.session_state.globally_refined_draft = {}
     initial_draft_content = {key: get_active_content(key) for key in UI_SECTION_ORDER}
 
-    # 构建一个映射，用于查找每个UI章节对应的原始生成提示
-    # 这是一个简化的映射，实际应用中可能需要更复杂的逻辑来组合提示
     prompt_map = {
         "background": [prompts.PROMPT_BACKGROUND_CONTEXT, prompts.PROMPT_BACKGROUND_PROBLEM],
         "invention": [prompts.PROMPT_INVENTION_PURPOSE, prompts.PROMPT_INVENTION_SOLUTION_DETAIL, prompts.PROMPT_INVENTION_EFFECTS],
         "implementation": [prompts.PROMPT_IMPLEMENTATION_POINT]
-        # "title" 是JSON列表，不适合此重构流程
     }
 
     with st.status("正在执行全局重构与润色...", expanded=True) as status:
         for target_key in UI_SECTION_ORDER:
-            if target_key in ['drawings', 'title']: # 跳过附图和标题
+            if target_key in ['drawings', 'title']:
                 st.session_state.globally_refined_draft[target_key] = initial_draft_content.get(target_key)
                 continue
             
             status.update(label=f"正在重构与润色: {UI_SECTION_CONFIG[target_key]['label']}...")
             
-            # 1. 构建全局上下文
             global_context_parts = []
             for key, content in initial_draft_content.items():
                 if key != target_key:
@@ -453,14 +504,11 @@ def run_global_refinement(llm_client: LLMClient):
             global_context = "\n".join(global_context_parts)
             target_content = initial_draft_content.get(target_key, "")
 
-            # 2. 获取原始生成要求
             original_prompts = prompt_map.get(target_key, [])
             original_generation_prompt = "\n\n---\n\n".join(original_prompts)
             if not original_generation_prompt:
                  st.warning(f"未找到 {UI_SECTION_CONFIG[target_key]['label']} 的原始生成指令，将仅基于全局上下文进行润色。")
 
-
-            # 3. 调用新的全局重构润色Prompt
             refine_prompt = prompts.PROMPT_GLOBAL_RESTRUCTURE_AND_POLISH.format(
                 global_context=global_context,
                 target_section_name=UI_SECTION_CONFIG[target_key]['label'],
@@ -536,7 +584,6 @@ def main():
         
         key_components = brief.get('key_components_or_steps', [])
         processed_steps = []
-        # Defensively process the list to handle dicts like [{'step': '...'}] or simple strings.
         if key_components and isinstance(key_components[0], dict):
             processed_steps = [str(list(item.values())[0]) for item in key_components if item and item.values()]
         else:
@@ -590,7 +637,6 @@ def main():
             
             is_expanded = (not versions) or is_section_stale or (key == just_generated_key)
             with st.expander(expander_label, expanded=is_expanded):
-                # --- 特殊处理附图章节 ---
                 if key == 'drawings':
                     invention_content = get_active_content("invention")
                     if not invention_content:
@@ -633,91 +679,9 @@ def main():
 
                                 st.markdown(f"**构思说明:** *{drawing.get('description', '无')}*")
                                 
+                                # 使用新的辅助函数渲染组件
                                 drawing_key = f"mermaid_{i}"
-                                safe_title = "".join(c for c in drawing.get('title', '') if c.isalnum() or c in (' ', '_')).rstrip()
-                                
-                                escaped_code = drawing["code"].replace("`", "\\`")
-
-                                html_component = f'''
-                                    <div id="mermaid-view-{drawing_key}">
-                                        <div id="mermaid-output-{drawing_key}" style="background-color: white; padding: 1rem; border-radius: 0.5rem;"></div>
-                                    </div>
-                                    <button id="download-btn-{drawing_key}" style="margin-top: 10px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; cursor: pointer;">📥 下载 PNG</button>
-                                    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-                                    <script>
-                                    (function() {{
-                                        const drawingKey = "{drawing_key}";
-                                        const pngFileName = "{safe_title or f'drawing_{i}'}.png";
-                                        const code = `{escaped_code}`.trim();
-                                        
-                                        const outputDiv = document.getElementById(`mermaid-output-${{drawingKey}}`);
-                                        const downloadBtn = document.getElementById(`download-btn-${{drawingKey}}`);
-
-                                        const renderDiagram = async () => {{
-                                            try {{
-                                                // 将主题从 'base' 修改为 'neutral' 以实现黑白风格
-                                                mermaid.initialize({{ startOnLoad: false, theme: 'neutral' }}); 
-                                                const {{ svg }} = await mermaid.render(`mermaid-svg-${{drawingKey}}`, code);
-                                                outputDiv.innerHTML = svg;
-                                            }} catch (e) {{
-                                                outputDiv.innerHTML = `<pre style="color: red;">Error rendering diagram:\n${{e.message}}</pre>`;
-                                                console.error("Mermaid render error:", e);
-                                            }}
-                                        }};
-
-                                        const downloadPNG = async () => {{
-                                            try {{
-                                                const svgElement = outputDiv.querySelector('svg');
-                                                if (!svgElement) {{ alert("Diagram not rendered yet."); return; }}
-                                                
-                                                // 确保下载的PNG背景是白色
-                                                svgElement.style.backgroundColor = 'white';
-
-                                                const svgData = new XMLSerializer().serializeToString(svgElement);
-                                                const img = new Image();
-                                                const canvas = document.createElement('canvas');
-                                                const ctx = canvas.getContext('2d');
-
-                                                img.onload = function() {{
-                                                    const scale = 2; 
-                                                    // 使用 SVG 的 viewBox 属性来获取准确尺寸，避免 getBoundingClientRect 的问题
-                                                    const viewBox = svgElement.viewBox.baseVal;
-                                                    const width = viewBox.width;
-                                                    const height = viewBox.height;
-                                                    
-                                                    canvas.width = width * scale;
-                                                    canvas.height = height * scale;
-                                                    
-                                                    // 绘制白色背景
-                                                    ctx.fillStyle = 'white';
-                                                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                                                    
-                                                    // 绘制图像
-                                                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                                                    
-                                                    const pngFile = canvas.toDataURL('image/png');
-                                                    const downloadLink = document.createElement('a');
-                                                    downloadLink.download = pngFileName;
-                                                    downloadLink.href = pngFile;
-                                                    document.body.appendChild(downloadLink);
-                                                    downloadLink.click();
-                                                    document.body.removeChild(downloadLink);
-                                                }};
-                                                img.src = `data:image/svg+xml;base64,${{btoa(unescape(encodeURIComponent(svgData)))}}`;
-                                            }} catch (e) {{
-                                                console.error("Download failed:", e);
-                                                alert(`Failed to generate PNG: ${{e.message}}`);
-                                            }}
-                                        }};
-
-                                        if (code) {{
-                                            renderDiagram();
-                                            downloadBtn.addEventListener('click', downloadPNG);
-                                        }}
-                                    }})();
-                                    </script>
-                                '''
-                                components.html(html_component, height=450, scrolling=True)
+                                render_mermaid_component(drawing_key, drawing)
                                 
                                 edited_code = st.text_area("编辑Mermaid代码:", value=drawing["code"], key=f"edit_code_{i}", height=150)
                                 if edited_code != drawing["code"]:
@@ -729,10 +693,8 @@ def main():
                                     st.rerun()
                     continue
 
-                # --- 常规章节处理 ---
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    # Handle structured_brief as a special case dependency that is not versioned
                     deps_met = all(
                         (st.session_state.get("structured_brief") if dep == "structured_brief" else get_active_content(dep))
                         for dep in config["dependencies"]
