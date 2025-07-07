@@ -3,3 +3,4 @@
 .env
 .python-version
 uv.lock
+nohup.out
