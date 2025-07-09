@@ -27,24 +27,10 @@ from workflows import (
 
 def add_new_version(key: str, content: Any):
     """
-    为指定key添加一个新版本，处理不同内容类型，更新状态并触发UI刷新。
+    为指定key添加一个新版本，更新状态并触发UI刷新。
     """
-    # 根据key的内容类型，创建合适的版本对象
-    if key == 'title':
-        # 发明名称的版本是简单的字符串列表
-        st.session_state[f"{key}_versions"].append(content)
-    elif key == 'drawings':
-        # 附图的版本是一个包含多个图表对象的列表
-        st.session_state[f"{key}_versions"].append(content)
-    else:
-        # 其他章节（背景、发明内容等）使用标准的字典结构
-        # 当用户手动编辑时，我们将新内容视为该版本的初始稿和活动内容
-        new_version_obj = {
-            "active_content": content,
-            "initial_draft": content,
-            "critic_feedback": None
-        }
-        st.session_state[f"{key}_versions"].append(new_version_obj)
+    # The content is the new version, typically a string or a list for drawings.
+    st.session_state[f"{key}_versions"].append(content)
 
     # 更新激活版本的索引指向新创建的版本
     st.session_state[f"{key}_active_index"] = len(st.session_state[f"{key}_versions"]) - 1
@@ -211,7 +197,7 @@ def render_standard_section(llm_client: LLMClient, key: str, versions: list):
         )
         if deps_met:
             if st.button(f"🔄 重新生成 {label}" if versions else f"✍️ 生成 {label}", key=f"btn_{key}"):
-                with st.spinner(f"正在执行 {label} 的生成/精炼流程..."):
+                with st.spinner(f"正在执行 {label} 的生成流程..."):
                     generate_ui_section(llm_client, key)
                     st.session_state.just_generated_key = key
                     st.rerun()
@@ -229,29 +215,8 @@ def render_standard_section(llm_client: LLMClient, key: str, versions: list):
                 st.rerun()
 
     if versions:
-        active_version_data = versions[active_idx]
         active_content = get_active_content(key)
 
-        if isinstance(active_version_data, dict) and active_version_data.get("critic_feedback"):
-            feedback = active_version_data["critic_feedback"]
-            with st.container(border=True):
-                score = feedback.get('score', 'N/A')
-                passed = "✅ 通过" if feedback.get('passed') else "❌ 待改进"
-                st.markdown(f"**AI 批判家意见:** {passed} (得分: {score})")
-                if not feedback.get('passed') and feedback.get('feedback'):
-                    for f in feedback['feedback']:
-                        st.caption(f" - {f}")
-                    if active_version_data['active_content'] != active_version_data['initial_draft']:
-                        st.markdown("**初稿 (v1):**")
-                        st.text_area(
-                            label="v1 draft content",
-                            value=active_version_data['initial_draft'],
-                            height=200,
-                            disabled=True,
-                            key=f"v1_draft_{key}",
-                            label_visibility="collapsed"
-                        )
-        
         with st.form(key=f'form_edit_{key}'):
             if key == 'title':
                 edited_content = st.text_input("编辑区", value=active_content)
@@ -312,7 +277,7 @@ def render_preview_stage(llm_client: LLMClient):
 def main():
     st.set_page_config(page_title="智能专利撰写助手 v4", layout="wide", page_icon="📝")
     st.title("📝 智能专利申请书撰写助手 v4")
-    st.caption("新功能：生成时进行自我批判与修正，并支持全局回顾精炼。")
+    st.caption("新功能：支持全局回顾精炼。")
 
     initialize_session_state()
     config = st.session_state.config

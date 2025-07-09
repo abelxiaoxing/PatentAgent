@@ -9,17 +9,10 @@ def get_active_content(key: str) -> Any:
         return None
     active_index = st.session_state.get(f"{key}_active_index", 0)
     version_data = st.session_state[f"{key}_versions"][active_index]
-    
-    # 为了向后兼容，处理旧的基于字符串的版本
-    if isinstance(version_data, str):
-        return version_data
-    # 处理新的基于字典的版本
-    if isinstance(version_data, dict):
-        return version_data.get("active_content")
-    # 处理列表（例如附图）
-    if isinstance(version_data, list):
-        return version_data
-    return None
+
+    # The complex dictionary wrapper for versions has been removed.
+    # The version data is now the content itself (e.g., a string, or a list for drawings).
+    return version_data
 
 def is_stale(ui_key: str) -> bool:
     """检查某个UI章节是否因其依赖项更新而过时。"""

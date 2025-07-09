@@ -57,10 +57,7 @@ def build_format_args(dependencies: List[str]) -> Dict[str, Any]:
     format_args = {**st.session_state.structured_brief}
     for dep in dependencies:
         dep_content = get_active_content(dep)
-        if isinstance(dep_content, dict):
-            format_args[dep] = dep_content.get('active_content') or st.session_state.structured_brief.get(dep)
-        else:
-            format_args[dep] = dep_content or st.session_state.structured_brief.get(dep)
+        format_args[dep] = dep_content or st.session_state.structured_brief.get(dep)
 
     if "key_components_or_steps" in dependencies:
         format_args["key_components_or_steps"] = "\n".join(st.session_state.structured_brief.get('key_components_or_steps', []))
@@ -72,7 +69,7 @@ def build_format_args(dependencies: List[str]) -> Dict[str, Any]:
     return format_args
 
 def generate_ui_section(llm_client: LLMClient, ui_key: str):
-    """为单个UI章节执行生成、批判和精炼的完整流程。"""
+    """为单个UI章节执行生成流程。"""
     if ui_key == "drawings":
         invention_solution_detail = get_active_content("invention_solution_detail")
         generate_all_drawings(llm_client, invention_solution_detail)
@@ -83,7 +80,6 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
     for micro_key in workflow_keys:
         step_config = WORKFLOW_CONFIG[micro_key]
         
-        # 使用新的辅助函数构建参数
         format_args = build_format_args(step_config["dependencies"])
 
         # 特殊处理 implementation_details 的循环生成
@@ -110,8 +106,8 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
         st.session_state[f"{micro_key}_active_index"] = len(st.session_state[f"{micro_key}_versions"]) - 1
         st.session_state.data_timestamps[micro_key] = time.time()
 
-    # --- 步骤 2: 组装初稿 (content_v1) ---
-    content_v1 = ""
+    # --- 步骤 2: 组装初稿 ---
+    content = ""
     if ui_key == "title":
         title_options = get_active_content("title_options") or []
         st.session_state.title_versions.extend(title_options)
@@ -121,59 +117,22 @@ def generate_ui_section(llm_client: LLMClient, ui_key: str):
     elif ui_key == "background":
         context = get_active_content("background_context") or ""
         problem = get_active_content("background_problem") or ""
-        content_v1 = f"## 2.1 对最接近发明的同类现有技术状况加以分析说明\n{context}\n\n## 2.2 实事求是地指出现有技术存在的问题，尽可能分析存在的原因。\n{problem}"
+        content = f"## 2.1 对最接近发明的同类现有技术状况加以分析说明\n{context}\n\n## 2.2 实事求是地指出现有技术存在的问题，尽可能分析存在的原因。\n{problem}"
     elif ui_key == "invention":
         purpose = get_active_content("invention_purpose") or ""
         solution_detail = get_active_content("invention_solution_detail") or ""
         effects = get_active_content("invention_effects") or ""
-        content_v1 = f"## 3.1 发明目的\n{purpose}\n\n## 3.2 技术解决方案\n{solution_detail}\n\n## 3.3 技术效果\n{effects}"
+        content = f"## 3.1 发明目的\n{purpose}\n\n## 3.2 技术解决方案\n{solution_detail}\n\n## 3.3 技术效果\n{effects}"
     elif ui_key == "implementation":
         details = get_active_content("implementation_details") or []
-        content_v1 = "\n".join([f"{i+1}. {detail}" for i, detail in enumerate(details)])
+        content = "\n".join([f"{i+1}. {detail}" for i, detail in enumerate(details)])
 
-    if not content_v1.strip():
+    if not content.strip():
         st.warning(f"无法为 {UI_SECTION_CONFIG[ui_key]['label']} 生成初稿，依赖项内容为空。")
         return
 
-    # --- 步骤 3: 内部批判 (Self-Criticism) ---
-    active_content = content_v1
-    critic_result = None
-    with st.spinner(f"“批判家”正在审查 {UI_SECTION_CONFIG[ui_key]['label']}..."):
-        critic_prompt = prompts.PROMPT_CRITIC_SECTION.format(
-            section_content=content_v1,
-            structured_brief=json.dumps(st.session_state.structured_brief, ensure_ascii=False, indent=2)
-        )
-        try:
-            critic_response_str = llm_client.call([{"role": "user", "content": critic_prompt}], json_mode=True)
-            critic_result = json.loads(critic_response_str.strip())
-        except (json.JSONDecodeError, KeyError) as e:
-            st.error(f"无法解析批判家返回的JSON: {e}\n原始返回: {critic_response_str}")
-
-    # --- 步骤 4: 决策与迭代 ---
-    if critic_result and not critic_result.get("passed", True):
-        with st.spinner(f"根据批判家意见，正在自动精炼 {UI_SECTION_CONFIG[ui_key]['label']}..."):
-            feedback_str = "\n".join(critic_result.get("feedback", ["无具体反馈。"]))
-            refine_prompt = prompts.PROMPT_REFINE_SECTION.format(
-                structured_brief=json.dumps(st.session_state.structured_brief, ensure_ascii=False, indent=2),
-                content_v1=content_v1,
-                feedback=feedback_str
-            )
-            try:
-                content_v2 = llm_client.call([{"role": "user", "content": refine_prompt}], json_mode=False)
-                active_content = content_v2.strip()
-                st.success(f"{UI_SECTION_CONFIG[ui_key]['label']} 已自动精炼！")
-            except Exception as e:
-                st.error(f"自动精炼失败: {e}")
-    elif critic_result:
-        st.success(f"{UI_SECTION_CONFIG[ui_key]['label']} 初稿质量达标！")
-
-    # --- 步骤 5: 保存最终版本 ---
-    new_version = {
-        "active_content": active_content,
-        "initial_draft": content_v1,
-        "critic_feedback": critic_result
-    }
-    st.session_state[f"{ui_key}_versions"].append(new_version)
+    # --- 步骤 3: 保存最终版本 ---
+    st.session_state[f"{ui_key}_versions"].append(content)
     st.session_state[f"{ui_key}_active_index"] = len(st.session_state[f"{ui_key}_versions"]) - 1
     st.session_state.data_timestamps[ui_key] = time.time()
 
