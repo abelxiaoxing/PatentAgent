@@ -61,4 +61,3 @@ class LLMClient:
                 **extra_params,
             )
             return response.choices[0].message.content
-            return ""

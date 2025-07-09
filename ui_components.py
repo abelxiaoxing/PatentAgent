@@ -51,80 +51,75 @@ def clean_mermaid_code(code: str) -> str:
         cleaned_code = cleaned_code[:-3].strip()
     return cleaned_code
 
-@st.cache_data
-def load_mermaid_script():
-    """加载并缓存Mermaid JS脚本文件。"""
+
+def load_mermaid_script() -> str:
+    """加载并缓存外部的Mermaid JS脚本文件内容。"""
     try:
-        with open("mermaid_script.js", "r") as f:
+        with open("mermaid_script.js", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        st.error("错误：mermaid_script.js 文件未找到。")
-        return ""
+        # This will be visible in the browser's JS console
+                return "console.error('FATAL: mermaid_script.js not found.');"
 
 def render_mermaid_component(drawing_key: str, drawing: dict, height: int = 500):
     """
-    渲染单个Mermaid图表组件。
-    - 使用st.cache_data缓存外部JS文件内容。
-    - 将Mermaid代码和元数据安全地嵌入HTML。
-    - 确保Mermaid初始化和渲染在正确的时间执行。
-    - 设置了固定的高度并允许滚动。
+    使用统一的HTML组件渲染单个Mermaid图表。
+    每个组件都在一个独立的iframe中加载自己的JS依赖项。
     """
+    # 1. 加载自定义脚本内容
     mermaid_script_content = load_mermaid_script()
-    if not mermaid_script_content:
-        st.error("Mermaid脚本未能加载，无法渲染附图。")
-        return
 
-    # 清理和准备数据
+    # 2. 为每个组件准备完整的脚本集
+    # 每次调用都必须包含这些脚本，因为每个组件都在一个独立的iframe中。
+    script_tags = f"""
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>{mermaid_script_content}</script>
+    """
+
+    # 3. 清理和准备数据
     code_to_render = clean_mermaid_code(drawing.get("code", "graph TD; A[无代码];"))
     safe_title = "".join(c for c in drawing.get('title', '') if c.isalnum() or c in (' ', '_')).rstrip()
 
-    # 将Python变量安全地转换为JSON字符串，以便在JS中使用
+    # 4. 将 Python 变量转换为 JSON 字符串以便安全嵌入
     code_json = json.dumps(code_to_render)
     safe_title_json = json.dumps(safe_title)
     drawing_key_json = json.dumps(drawing_key)
 
-    # 构建HTML组件
-    # - 外部JS文件只注入一次。
-    # - Mermaid库只加载一次。
-    # - 每次组件重绘时，通过内联脚本调用渲染函数。
+    # 5. 构建完整的 HTML 内容
     html_content = f"""
-    <div id="mermaid-container-{drawing_key}" style="height: {height-50}px; overflow: auto; border: 1px solid #eee; padding: 10px; border-radius: 5px;">
-        <div id="mermaid-output-{drawing_key}" style="background-color: white; padding: 1rem; border-radius: 0.5rem;"></div>
+    {script_tags}
+    <div style="position: relative; height: {height}px;">
+        <div id="mermaid-container-{drawing_key}" style="height: 100%; overflow: auto; border: 1px solid #eee; padding: 10px; border-radius: 5px;">
+            <div id="mermaid-error-{drawing_key}" style="color: red;"></div>
+            <div id="mermaid-output-{drawing_key}" style="background-color: white; padding: 1rem; border-radius: 0.5rem;"></div>
+        </div>
+        <button id="download-btn-{drawing_key}" style="position: absolute; top: 15px; right: 15px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; cursor: pointer; z-index: 10;">📥 下载 PNG</button>
     </div>
-    <button id="download-btn-{drawing_key}" style="margin-top: 10px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; cursor: pointer;">📥 下载 PNG</button>
-
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    
     <script>
-        // 确保Mermaid已初始化
-        if (typeof mermaid !== 'undefined') {{
-            mermaid.initialize({{ startOnLoad: false, theme: 'neutral' }});
-        }}
-        
-        // 注入外部JS文件的功能
-        {mermaid_script_content}
-    </script>
-    <script>
-        // 使用try-catch确保即使一个图表失败，其他图表也能继续渲染
-        try {{
-            const code = {code_json};
-            const safeTitle = {safe_title_json};
-            const drawingKey = {drawing_key_json};
-
-            // 延迟调用以确保DOM元素已准备好
-            setTimeout(() => {{
+        // 使用 setTimeout 确保 Mermaid 库已初始化
+        setTimeout(() => {{
+            try {{
                 if (window.renderMermaid) {{
-                    window.renderMermaid(drawingKey, safeTitle, code);
+                    window.renderMermaid({drawing_key_json}, {safe_title_json}, {code_json});
                 }} else {{
-                    console.error('renderMermaid function not found.');
+                    const errorMsg = 'Mermaid render function (window.renderMermaid) not found.';
+                    console.error(errorMsg);
+                    const errorDiv = document.getElementById('mermaid-error-{drawing_key}');
+                    if(errorDiv) {{
+                        errorDiv.innerHTML = '<p>' + errorMsg + '</p>';
+                    }}
                 }}
-            }}, 100);
-        }} catch (e) {{
-            console.error('Failed to parse mermaid diagram for key {drawing_key}:', e);
-            const outputDiv = document.getElementById('mermaid-output-{drawing_key}');
-            if(outputDiv) {{
-                outputDiv.innerHTML = '<p style="color:red;">Failed to parse drawing data. See browser console for details.</p>';
+            }} catch (e) {{
+                const errorMsg = 'Error initializing Mermaid: ' + (e.message || e);
+                console.error('Error initializing Mermaid render for key: ' + '{drawing_key}', e);
+                const errorDiv = document.getElementById('mermaid-error-{drawing_key}');
+                if(errorDiv) {{
+                    errorDiv.innerHTML = '<p>' + errorMsg + '</p>';
+                }}
             }}
-        }}
+        }}, 100);
     </script>
     """
     components.html(html_content, height=height, scrolling=True)
+

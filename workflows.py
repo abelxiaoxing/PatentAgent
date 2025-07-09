@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import prompts
 from llm_client import LLMClient
 from state_manager import get_active_content
-from config import UI_SECTION_CONFIG, WORKFLOW_CONFIG
+from config import UI_SECTION_CONFIG, WORKFLOW_CONFIG, UI_SECTION_ORDER
 from ui_components import clean_mermaid_code
 
 def generate_all_drawings(llm_client: LLMClient, invention_solution_detail: str):
@@ -215,7 +215,7 @@ def run_global_refinement(llm_client: LLMClient):
             target_content = initial_draft_content.get(target_key, "")
 
             original_prompts = prompt_map.get(target_key, [])
-            original_generation_prompt = "\n\n---\n\n".join(original_prompts)
+            original_generation_prompt = "\n---\n".join(original_prompts)
             if not original_generation_prompt:
                  st.warning(f"未找到 {UI_SECTION_CONFIG[target_key]['label']} 的原始生成指令，将仅基于全局上下文进行润色。")
 
