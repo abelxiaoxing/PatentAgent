@@ -17,12 +17,12 @@ def load_config() -> dict:
         "openai": {
             "api_base": os.getenv("OPENAI_API_BASE", "https://api.mistral.ai/v1"),
             "api_key": os.getenv("OPENAI_API_KEY", ""),
-            "model": os.getenv("OPENAI_MODEL", "mistral-medium-latest"),
+            "model": os.getenv("OPENAI_MODEL_NAME", "mistral-medium-latest"),
             "proxy_url": os.getenv("OPENAI_PROXY_URL", ""),
         },
         "google": {
             "api_key": os.getenv("GOOGLE_API_KEY", ""),
-            "model": os.getenv("GOOGLE_MODEL", "gemini-1.5-flash"),
+            "model": os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
             "proxy_url": os.getenv("GOOGLE_PROXY_URL", ""),
         },
     }
@@ -33,7 +33,7 @@ def save_config(cfg: dict):
     if "openai" in cfg:
         set_key(env_file, "OPENAI_API_KEY", cfg["openai"].get("api_key", ""))
         set_key(env_file, "OPENAI_API_BASE", cfg["openai"].get("api_base", ""))
-        set_key(env_file, "OPENAI_MODEL", cfg["openai"].get("model", ""))
+        set_key(env_file, "OPENAI_MODEL_NAME", cfg["openai"].get("model", ""))
         set_key(env_file, "OPENAI_PROXY_URL", cfg["openai"].get("proxy_url", ""))
     if "google" in cfg:
         set_key(env_file, "GOOGLE_API_KEY", cfg["google"].get("api_key", ""))

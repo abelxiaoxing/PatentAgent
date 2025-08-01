@@ -54,28 +54,20 @@ window.renderMermaid = async function(drawingKey, safeTitle, code) {
             const svgWidth = svgElement.getBoundingClientRect().width;
             const svgHeight = svgElement.getBoundingClientRect().height;
 
-            // 关键修复：对原始 SVG 字符串进行处理，确保其包含明确的 width 和 height 属性
-            // 这有助于 Image 对象更可靠地加载 SVG。
+            // 对原始 SVG 字符串进行处理，确保其包含明确的 width 和 height 属性
             let svgForDownload = svg; // 从 mermaid.render 获取的原始 SVG 字符串
             try {
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(svgForDownload, "image/svg+xml");
                 const root = doc.documentElement;
-
-                // 设置 width 和 height 属性
                 root.setAttribute('width', svgWidth);
                 root.setAttribute('height', svgHeight);
-
-                // 序列化回字符串
                 svgForDownload = new XMLSerializer().serializeToString(doc);
             } catch (e) {
                 console.warn("Failed to add explicit width/height to SVG for download, using original SVG:", e);
-                // 如果处理失败，回退到原始 SVG，但可能会再次遇到加载问题
             }
 
-            const svgBlob = new Blob([svgForDownload], { type: 'image/svg+xml;charset=utf-8' });
-            const url = URL.createObjectURL(svgBlob);
-
+            // 关键修复：使用 Base64 Data URI 代替 Blob URL，以提高可靠性
             const image = new Image();
 
             image.onload = () => {
@@ -86,7 +78,7 @@ window.renderMermaid = async function(drawingKey, safeTitle, code) {
                 // 为美观添加边距
                 const margin = 20;
                 
-                // 使用加载后图像的自然尺寸，这是最可靠的尺寸获取方式
+                // 使用加载后图像的自然尺寸
                 const imgWidth = image.width;
                 const imgHeight = image.height;
 
@@ -107,18 +99,17 @@ window.renderMermaid = async function(drawingKey, safeTitle, code) {
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
-
-                // 清理 blob URL
-                URL.revokeObjectURL(url);
             };
 
             image.onerror = (e) => {
                 console.error("图像加载失败，无法转换为画布：", e);
                 errorDiv.innerHTML = '<p style="color:red;">无法将图表转换为 PNG。图像加载失败。</p>';
-                URL.revokeObjectURL(url);
             };
 
-            image.src = url;
+            // 将 SVG 转换为 Base64 Data URI
+            // 使用 unescape(encodeURIComponent(...)) 来正确处理 UTF-8 字符
+            const svgBase64 = btoa(unescape(encodeURIComponent(svgForDownload)));
+            image.src = `data:image/svg+xml;base64,${svgBase64}`;
         };
 
     } catch (e) {

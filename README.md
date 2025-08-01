@@ -76,7 +76,7 @@ PROVIDER=openai
 # OpenAI 兼容 API 配置
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_API_BASE=https://api.mistral.ai/v1  # 可替换为其他兼容API地址
-OPENAI_MODEL=mistral-medium-latest
+OPENAI_MODEL_NAME=mistral-medium-latest
 
 # Google Gemini 配置
 GOOGLE_API_KEY=your_google_api_key

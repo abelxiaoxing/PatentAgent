@@ -23,7 +23,7 @@ def render_sidebar(config: dict):
 
         if config["provider"] == "openai":
             p_cfg["api_base"] = st.text_input("API 基础地址", value=p_cfg.get("api_base", ""), key="openai_api_base")
-            p_cfg["model"] = st.text_input("模型名称", value=p_cfg.get("model", ""), key="openai_model")
+            p_cfg["model"] = st.text_input("模型名称", value=p_cfg.get("model", ""), key="openai_model_name")
             p_cfg["proxy_url"] = st.text_input(
                 "代理 URL (可选)", value=p_cfg.get("proxy_url", ""),
                 placeholder="http://127.0.0.1:7890", key="openai_proxy_url"
