@@ -275,8 +275,8 @@ def render_preview_stage(llm_client: LLMClient):
 # --- 主应用逻辑 ---
 
 def main():
-    st.set_page_config(page_title="智能专利撰写助手 v4", layout="wide", page_icon="📝")
-    st.title("📝 智能专利申请书撰写助手 v4")
+    st.set_page_config(page_title="智能专利撰写助手", layout="wide", page_icon="📝")
+    st.title("📝 智能专利申请书撰写助手")
     st.caption("新功能：支持全局回顾精炼。")
 
     initialize_session_state()
