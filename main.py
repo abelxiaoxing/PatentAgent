@@ -22,6 +22,7 @@ from workflows import (
     generate_all_drawings,
     run_global_refinement,
 )
+from auth import AuthManager, check_authentication
 
 # --- 重构辅助函数 ---
 
@@ -276,6 +277,15 @@ def render_preview_stage(llm_client: LLMClient):
 
 def main():
     st.set_page_config(page_title="智能专利撰写助手", layout="wide", page_icon="📝")
+
+    # 初始化认证管理器
+    auth_manager = AuthManager()
+
+    # 检查认证状态
+    if not check_authentication(auth_manager):
+        return
+
+    # 认证通过后显示主界面
     st.title("📝 智能专利申请书撰写助手")
     st.caption("新功能：支持全局回顾精炼。")
 

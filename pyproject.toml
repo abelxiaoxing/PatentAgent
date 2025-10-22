@@ -5,11 +5,13 @@ description = "自动撰写发明专利申请文件"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "bcrypt>=5.0.0",
     "google-genai>=1.19.0",
     "httpx[socks]>=0.28.1",
     "openai>=1.0.0",
     "python-dotenv>=1.1.0",
     "streamlit>=1.33.0",
+    "toml>=0.10.2",
 ]
 
 # 以下为专门给 Poetry (Streamlit Cloud 使用) 看的 部分,本地部署时需注释掉

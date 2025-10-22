@@ -4,3 +4,4 @@
 .python-version
 uv.lock
 nohup.out
+auth_config.toml
