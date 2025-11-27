@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import json
+import time
 from config import save_config
 
 def render_sidebar(config: dict):
@@ -10,9 +11,9 @@ def render_sidebar(config: dict):
         provider_map = {"OpenAI兼容": "openai", "Google": "google"}
         provider_keys = list(provider_map.keys())
         current_provider_key = next((key for key, value in provider_map.items() if value == config.get("provider")), "OpenAI兼容")
-        
+
         selected_provider_display = st.radio(
-            "模型提供商", options=provider_keys, 
+            "模型提供商", options=provider_keys,
             index=provider_keys.index(current_provider_key),
             horizontal=True
         )
@@ -35,9 +36,23 @@ def render_sidebar(config: dict):
                 placeholder="http://127.0.0.1:7890", key="google_proxy_url"
             )
 
-        if st.button("保存配置"):
+        # 1秒自动保存功能（内存中）
+        if 'last_config_save_time' not in st.session_state:
+            st.session_state.last_config_save_time = 0
+
+        current_time = time.time()
+        if current_time - st.session_state.last_config_save_time >= 1:
+            # 自动保存到session_state中（内存中）
+            st.session_state.config = config.copy()
+            st.session_state.last_config_save_time = current_time
+
+            # 更新LLM客户端配置
+            if 'llm_client' in st.session_state:
+                st.session_state.llm_client.update_config(config)
+
+        if st.button("💾 永久保存配置", type="primary"):
             save_config(config)
-            st.success("配置已保存！")
+            st.success("配置已永久保存到配置文件！")
             if 'llm_client' in st.session_state:
                 del st.session_state.llm_client
             st.rerun()

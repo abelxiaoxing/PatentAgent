@@ -10,7 +10,35 @@ class LLMClient:
         self.full_config = config
         self.provider = config.get("provider", "openai")
         provider_cfg = config.get(self.provider, {})
-        
+
+        proxy_url = provider_cfg.get("proxy_url")
+        self.model = provider_cfg.get("model")
+        api_key = provider_cfg.get("api_key")
+
+        if self.provider == "google":
+            if proxy_url:
+                os.environ["HTTP_PROXY"] = proxy_url
+                os.environ["HTTPS_PROXY"] = proxy_url
+            else:
+                if "HTTP_PROXY" in os.environ:
+                    del os.environ["HTTP_PROXY"]
+                if "HTTPS_PROXY" in os.environ:
+                    del os.environ["HTTPS_PROXY"]
+            self.client = genai.Client(api_key=api_key)
+        else:  # openai 兼容
+            http_client = httpx.Client(proxy=proxy_url or None)
+            self.client = openai.OpenAI(
+                api_key=api_key,
+                base_url=provider_cfg.get("api_base", ""),
+                http_client=http_client,
+            )
+
+    def update_config(self, config: dict):
+        """更新客户端配置"""
+        self.full_config = config
+        self.provider = config.get("provider", "openai")
+        provider_cfg = config.get(self.provider, {})
+
         proxy_url = provider_cfg.get("proxy_url")
         self.model = provider_cfg.get("model")
         api_key = provider_cfg.get("api_key")
