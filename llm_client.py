@@ -58,18 +58,36 @@ class LLMClient:
             return raw_text
         else: # openai 兼容
             extra_params = {"response_format": {"type": "json_object"}} if json_mode else {}
-            
-            # 检查是否存在非标准的 `enable_thinking` 参数，并将其设置为 False
-            # 使用 extra_body 来传递非标准参数，以避免库验证错误
-            extra_body = {}
-            extra_body["enable_thinking"] = False
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                temperature=0.1,
-                top_p=0.1,
-                messages=messages,
-                extra_body=extra_body,
-                **extra_params,
-            )
+            # 智能处理非标准参数，避免模型不兼容
+            # 仅对支持的模型添加 enable_thinking 参数
+            extra_body = {}
+
+            # 检查模型是否支持 enable_thinking 参数
+            # 实验版本模型通常不支持此参数
+            if self.model and not any(exp_keyword in self.model.lower()
+                                    for exp_keyword in ["exp", "experimental", "v3.2", "beta"]):
+                extra_body["enable_thinking"] = False
+
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.1,
+                    top_p=0.1,
+                    messages=messages,
+                    **({} if not extra_body else {"extra_body": extra_body}),
+                    **extra_params,
+                )
+            except Exception as e:
+                # 如果因为 enable_thinking 参数失败，重试时不带此参数
+                if "enable_thinking" in str(e):
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        temperature=0.1,
+                        top_p=0.1,
+                        messages=messages,
+                        **extra_params,
+                    )
+                else:
+                    raise e
             return response.choices[0].message.content
