@@ -17,6 +17,190 @@ if (typeof mermaid !== 'undefined') {
  * @param {string} code - 要渲染的 Mermaid 图表代码。
  */
 window.renderMermaid = async function(drawingKey, safeTitle, code) {
+    /**
+     * 从现有的SVG元素推算宽高，缺失时回退到 viewBox 或默认尺寸。
+     */
+    const resolveSvgSize = (svgEl) => {
+        const getNumber = (value) => {
+            if (typeof value === 'string' && value.includes('%')) {
+                return undefined; // 忽略百分比，避免取到100%等误导性的尺寸
+            }
+            const num = parseFloat(value);
+            return Number.isFinite(num) ? num : undefined;
+        };
+
+        const rect = svgEl.getBoundingClientRect ? svgEl.getBoundingClientRect() : { width: 0, height: 0 };
+
+        let width = getNumber(svgEl.getAttribute('width'));
+        let height = getNumber(svgEl.getAttribute('height'));
+
+        let viewBox = svgEl.getAttribute('viewBox') || '';
+        let vbParts = viewBox.trim().split(/\s+/).map(getNumber);
+        if (vbParts.length !== 4 || vbParts.some(v => !Number.isFinite(v))) {
+            vbParts = [];
+            viewBox = '';
+        }
+
+        // 1) 若已有 viewBox，优先信任其宽高
+        if (vbParts.length === 4) {
+            width = width || vbParts[2];
+            height = height || vbParts[3];
+        }
+
+        // 2) 使用布局后的真实尺寸（避免被0宽高属性污染）
+        if (!width && rect.width) width = rect.width;
+        if (!height && rect.height) height = rect.height;
+
+        // 3) 使用 getBBox 捕获真实内容范围
+        if ((!width || !height || !viewBox) && svgEl.getBBox) {
+            try {
+                const box = svgEl.getBBox();
+                width = width || Math.ceil(box.width);
+                height = height || Math.ceil(box.height);
+                if (!viewBox) {
+                    viewBox = `${box.x} ${box.y} ${box.width} ${box.height}`;
+                }
+            } catch (err) {
+                console.warn('获取SVG包围盒失败，使用默认尺寸。', err);
+            }
+        }
+
+        // 4) 最终兜底
+        width = width || svgEl.clientWidth || svgEl.scrollWidth || 1024;
+        height = height || svgEl.clientHeight || svgEl.scrollHeight || 768;
+        if (!viewBox) {
+            viewBox = `0 0 ${width} ${height}`;
+        }
+
+        // 不修改原始SVG，避免点击下载后实际渲染变小
+        return { width, height, viewBox };
+    };
+
+    /**
+     * 将SVG克隆并内联部分样式，避免外部依赖导致Canvas被污染。
+     */
+    const cloneSvgForExport = (svgEl, size) => {
+        const { width, height, viewBox } = size;
+        const cloned = svgEl.cloneNode(true);
+        cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        cloned.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+        cloned.setAttribute('width', width);
+        cloned.setAttribute('height', height);
+        if (viewBox) {
+            cloned.setAttribute('viewBox', viewBox);
+        } else {
+            cloned.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        }
+
+        // 保证有一个白色背景，避免透明导致的黑底/花色
+        const hasBg = cloned.querySelector('rect[data-export-bg]');
+        if (!hasBg) {
+            const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            bg.setAttribute('data-export-bg', 'true');
+            bg.setAttribute('x', '0');
+            bg.setAttribute('y', '0');
+            bg.setAttribute('width', width);
+            bg.setAttribute('height', height);
+            bg.setAttribute('fill', 'white');
+            cloned.insertBefore(bg, cloned.firstChild);
+        }
+
+        // 将通用字体嵌入，避免中文/特殊字符在Canvas中丢失
+        const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+        style.textContent = `
+            * {
+                font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica", "Arial", sans-serif !important;
+            }
+        `;
+        cloned.insertBefore(style, cloned.firstChild);
+
+        return cloned;
+    };
+
+    /**
+     * 将SVG转为PNG DataURL。
+     */
+    const svgToPng = (svgEl, safeTitleForLog, errorDiv) => {
+        return new Promise((resolve, reject) => {
+            try {
+                const size = resolveSvgSize(svgEl);
+                const { width, height } = size;
+                const margin = 16;
+                const scale = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3); // 控制缩放，避免超大图
+                const logicalWidth = width + margin * 2;
+                const logicalHeight = height + margin * 2;
+                const canvasWidth = Math.ceil(logicalWidth * scale);
+                const canvasHeight = Math.ceil(logicalHeight * scale);
+
+                const cloned = cloneSvgForExport(svgEl, size);
+                const svgString = new XMLSerializer().serializeToString(cloned);
+                const blob = new Blob(
+                    [`<?xml version="1.0" encoding="UTF-8"?>\n${svgString}`],
+                    { type: 'image/svg+xml;charset=utf-8' }
+                );
+                const url = URL.createObjectURL(blob);
+
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        if (!ctx) {
+                            throw new Error('Canvas 2D 上下文不可用。');
+                        }
+
+                        canvas.width = canvasWidth;
+                        canvas.height = canvasHeight;
+                        ctx.scale(scale, scale);
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+                        ctx.drawImage(img, margin, margin, width, height);
+                        URL.revokeObjectURL(url);
+
+                        canvas.toBlob((pngBlob) => {
+                            if (!pngBlob) {
+                                reject(new Error('无法生成PNG Blob'));
+                                return;
+                            }
+                            const pngUrl = URL.createObjectURL(pngBlob);
+                            resolve(pngUrl);
+                        }, 'image/png', 1.0);
+                    } catch (err) {
+                        URL.revokeObjectURL(url);
+                        reject(err);
+                    }
+                };
+
+                img.onerror = (e) => {
+                    URL.revokeObjectURL(url);
+                    reject(new Error(`SVG图片加载失败：${e?.message || e}`));
+                };
+
+                // 若SVG包含非ASCII字符，使用blob可避免 btoa 的编码问题
+                img.src = url;
+                errorDiv.innerHTML = '<p style="color:blue;">🔄 正在生成PNG，已内联样式并优化尺寸...</p>';
+                console.log(`开始导出PNG: ${safeTitleForLog}, size=${width}x${height}, scale=${scale}`);
+            } catch (err) {
+                reject(err);
+            }
+        });
+    };
+
+    /**
+     * 将 dataURL 下载为文件。
+     */
+    const triggerDownload = (url, filename) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${filename || 'patent_drawing'}.png`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    };
+
     const outputDivId = `mermaid-output-${drawingKey}`;
     const downloadBtnId = `download-btn-${drawingKey}`;
     const errorMsgId = `mermaid-error-${drawingKey}`;
@@ -44,374 +228,60 @@ window.renderMermaid = async function(drawingKey, safeTitle, code) {
 
         // 设置下载按钮
         downloadBtn.onclick = function() {
-            // 获取当前渲染的 SVG 元素的实际尺寸
-            const svgElement = outputDiv.querySelector('svg');
-            if (!svgElement) {
-                console.error("Download failed: SVG element not found for sizing.");
+            const svgElementForDownload = outputDiv.querySelector('svg');
+            if (!svgElementForDownload) {
                 errorDiv.innerHTML = '<p style="color:red;">无法找到要下载的图表 SVG 元素。</p>';
                 return;
             }
-            const svgWidth = svgElement.getBoundingClientRect().width;
-            const svgHeight = svgElement.getBoundingClientRect().height;
 
-            // 对原始 SVG 字符串进行处理，确保其包含明确的 width 和 height 属性
-            let svgForDownload = svg; // 从 mermaid.render 获取的原始 SVG 字符串
-            try {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(svgForDownload, "image/svg+xml");
-                const root = doc.documentElement;
-                root.setAttribute('width', svgWidth);
-                root.setAttribute('height', svgHeight);
-                svgForDownload = new XMLSerializer().serializeToString(doc);
-            } catch (e) {
-                console.warn("Failed to add explicit width/height to SVG for download, using original SVG:", e);
-            }
-
-            // 哈雷酱的绝对可靠PNG方案：只要PNG！绝对不降级！
-            const downloadPNG = () => {
-                console.log("🚀 开始PNG下载流程 - 绝对只要PNG！");
-
-                // 获取渲染的SVG元素
-                const svgElement = outputDiv.querySelector('svg');
-                if (!svgElement) {
-                    errorDiv.innerHTML = '<p style="color:red;">❌ 找不到SVG元素</p>';
-                    return;
-                }
-
-                // 获取准确的尺寸
-                const svgRect = svgElement.getBoundingClientRect();
-                const width = Math.ceil(svgRect.width) || 800;
-                const height = Math.ceil(svgRect.height) || 600;
-                const margin = 20;
-                const canvasWidth = width + margin * 2;
-                const canvasHeight = height + margin * 2;
-
-                console.log(`📐 SVG尺寸: ${width}x${height}, Canvas尺寸: ${canvasWidth}x${canvasHeight}`);
-
-                // 更新状态显示
-                errorDiv.innerHTML = '<p style="color:blue;">🔄 正在生成PNG图片...</p>';
-
-                // 方法1: 克隆DOM中的SVG元素（最可靠的方法）
-                const method1_CloneSVG = () => {
-                    return new Promise((resolve, reject) => {
-                        try {
-                            console.log("📋 方法1: 克隆DOM中的SVG元素");
-
-                            // 克隆SVG元素及其所有内容
-                            const clonedSVG = svgElement.cloneNode(true);
-
-                            // 确保所有必要的属性
-                            clonedSVG.setAttribute('width', width);
-                            clonedSVG.setAttribute('height', height);
-                            clonedSVG.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-                            clonedSVG.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-
-                            // 设置viewBox以确保缩放正确
-                            if (!clonedSVG.hasAttribute('viewBox')) {
-                                clonedSVG.setAttribute('viewBox', `0 0 ${width} ${height}`);
-                            }
-
-                            // 序列化为字符串
-                            const svgString = new XMLSerializer().serializeToString(clonedSVG);
-                            console.log("📄 SVG字符串长度:", svgString.length);
-
-                            // 创建Blob和URL
-                            const blob = new Blob([svgString], {
-                                type: 'image/svg+xml;charset=utf-8'
-                            });
-                            const url = URL.createObjectURL(blob);
-
-                            // 创建Image对象
-                            const img = new Image();
-
-                            img.onload = () => {
-                                try {
-                                    console.log("✅ SVG图片加载成功");
-                                    const canvas = document.createElement('canvas');
-                                    const ctx = canvas.getContext('2d');
-
-                                    canvas.width = canvasWidth;
-                                    canvas.height = canvasHeight;
-
-                                    // 白色背景
-                                    ctx.fillStyle = 'white';
-                                    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-                                    // 绘制SVG到Canvas
-                                    ctx.drawImage(img, margin, margin, width, height);
-                                    URL.revokeObjectURL(url);
-
-                                    // 导出为PNG
-                                    const pngUrl = canvas.toDataURL('image/png', 1.0);
-                                    resolve(pngUrl);
-                                } catch (e) {
-                                    URL.revokeObjectURL(url);
-                                    console.error("❌ Canvas绘制失败:", e);
-                                    reject(e);
-                                }
-                            };
-
-                            img.onerror = (e) => {
-                                URL.revokeObjectURL(url);
-                                console.error("❌ SVG图片加载失败:", e);
-                                reject(new Error('SVG图片加载失败'));
-                            };
-
-                            // 重要：设置src以确保触发加载
-                            img.src = url;
-
-                        } catch (e) {
-                            console.error("❌ 方法1执行失败:", e);
-                            reject(e);
-                        }
-                    });
-                };
-
-                // 方法2: 使用mermaid原始输出SVG字符串
-                const method2_UseOriginalSVG = () => {
-                    return new Promise((resolve, reject) => {
-                        try {
-                            console.log("📝 方法2: 使用mermaid原始SVG字符串");
-
-                            let cleanSVG = svgForDownload;
-
-                            // 确保基本命名空间
-                            if (!cleanSVG.includes('xmlns=')) {
-                                cleanSVG = cleanSVG.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"');
-                            }
-
-                            // 确保尺寸属性
-                            if (!cleanSVG.includes('width=')) {
-                                cleanSVG = cleanSVG.replace('<svg', `<svg width="${width}"`);
-                            }
-                            if (!cleanSVG.includes('height=')) {
-                                cleanSVG = cleanSVG.replace('<svg', `<svg height="${height}"`);
-                            }
-                            if (!cleanSVG.includes('viewBox=')) {
-                                cleanSVG = cleanSVG.replace('<svg', ` viewBox="0 0 ${width} ${height}"`);
-                            }
-
-                            console.log("🔧 清理后的SVG长度:", cleanSVG.length);
-
-                            const blob = new Blob([cleanSVG], {
-                                type: 'image/svg+xml;charset=utf-8'
-                            });
-                            const url = URL.createObjectURL(blob);
-
-                            const img = new Image();
-
-                            img.onload = () => {
-                                try {
-                                    console.log("✅ 原始SVG图片加载成功");
-                                    const canvas = document.createElement('canvas');
-                                    const ctx = canvas.getContext('2d');
-
-                                    canvas.width = canvasWidth;
-                                    canvas.height = canvasHeight;
-
-                                    ctx.fillStyle = 'white';
-                                    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-                                    ctx.drawImage(img, margin, margin, width, height);
-                                    URL.revokeObjectURL(url);
-
-                                    const pngUrl = canvas.toDataURL('image/png', 1.0);
-                                    resolve(pngUrl);
-                                } catch (e) {
-                                    URL.revokeObjectURL(url);
-                                    reject(e);
-                                }
-                            };
-
-                            img.onerror = (e) => {
-                                URL.revokeObjectURL(url);
-                                console.error("❌ 原始SVG图片加载失败:", e);
-                                reject(new Error('原始SVG图片加载失败'));
-                            };
-
-                            img.src = url;
-
-                        } catch (e) {
-                            console.error("❌ 方法2执行失败:", e);
-                            reject(e);
-                        }
-                    });
-                };
-
-                // 方法3: Data URI方法（避免Blob URL问题）
-                const method3_DataURI = () => {
-                    return new Promise((resolve, reject) => {
-                        try {
-                            console.log("🔗 方法3: 使用Data URI");
-
-                            let cleanSVG = svgForDownload;
-
-                            // 基本清理
-                            if (!cleanSVG.includes('xmlns=')) {
-                                cleanSVG = cleanSVG.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"');
-                            }
-                            if (!cleanSVG.includes('width=')) {
-                                cleanSVG = cleanSVG.replace('<svg', `<svg width="${width}"`);
-                            }
-                            if (!cleanSVG.includes('height=')) {
-                                cleanSVG = cleanSVG.replace('<svg', `<svg height="${height}"`);
-                            }
-
-                            // 转换为Base64 Data URI
-                            const base64 = btoa(unescape(encodeURIComponent(cleanSVG)));
-                            const dataUri = `data:image/svg+xml;base64,${base64}`;
-
-                            const img = new Image();
-
-                            img.onload = () => {
-                                try {
-                                    console.log("✅ Data URI图片加载成功");
-                                    const canvas = document.createElement('canvas');
-                                    const ctx = canvas.getContext('2d');
-
-                                    canvas.width = canvasWidth;
-                                    canvas.height = canvasHeight;
-
-                                    ctx.fillStyle = 'white';
-                                    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-                                    ctx.drawImage(img, margin, margin, width, height);
-
-                                    const pngUrl = canvas.toDataURL('image/png', 1.0);
-                                    resolve(pngUrl);
-                                } catch (e) {
-                                    reject(e);
-                                }
-                            };
-
-                            img.onerror = (e) => {
-                                console.error("❌ Data URI图片加载失败:", e);
-                                reject(new Error('Data URI图片加载失败'));
-                            };
-
-                            img.src = dataUri;
-
-                        } catch (e) {
-                            console.error("❌ 方法3执行失败:", e);
-                            reject(e);
-                        }
-                    });
-                };
-
-                // 方法4: 最后的备用方案 - 直接Canvas绘制
-                const method4_DirectCanvas = () => {
-                    return new Promise((resolve, reject) => {
-                        try {
-                            console.log("🎨 方法4: 直接Canvas绘制");
-
-                            const canvas = document.createElement('canvas');
-                            const ctx = canvas.getContext('2d');
-
-                            canvas.width = canvasWidth;
-                            canvas.height = canvasHeight;
-
-                            // 白色背景
-                            ctx.fillStyle = 'white';
-                            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-                            // 尝试获取SVG的HTML内容并直接绘制
-                            const svgHTML = svgElement.outerHTML;
-
-                            // 创建一个临时的Image来尝试渲染
-                            const img = new Image();
-                            const blob = new Blob([svgHTML], { type: 'image/svg+xml' });
-                            const url = URL.createObjectURL(blob);
-
-                            img.onload = () => {
-                                try {
-                                    ctx.drawImage(img, margin, margin, width, height);
-                                    URL.revokeObjectURL(url);
-                                    const pngUrl = canvas.toDataURL('image/png', 0.9);
-                                    resolve(pngUrl);
-                                } catch (e) {
-                                    URL.revokeObjectURL(url);
-                                    reject(e);
-                                }
-                            };
-
-                            img.onerror = () => {
-                                URL.revokeObjectURL(url);
-                                reject(new Error('直接Canvas绘制失败'));
-                            };
-
-                            img.src = url;
-
-                        } catch (e) {
-                            console.error("❌ 方法4执行失败:", e);
-                            reject(e);
-                        }
-                    });
-                };
-
-                // 按顺序尝试所有方法
-                const tryAllMethods = async () => {
-                    const methods = [
-                        { name: '克隆SVG', fn: method1_CloneSVG },
-                        { name: '原始SVG', fn: method2_UseOriginalSVG },
-                        { name: 'Data URI', fn: method3_DataURI },
-                        { name: '直接Canvas', fn: method4_DirectCanvas }
-                    ];
-
-                    for (let i = 0; i < methods.length; i++) {
-                        const method = methods[i];
-                        try {
-                            console.log(`🔄 尝试方法${i + 1}: ${method.name}`);
-                            errorDiv.innerHTML = `<p style="color:blue;">🔄 尝试方法${i + 1}: ${method.name}...</p>`;
-
-                            const pngUrl = await method.fn();
-                            console.log(`🎉 方法${i + 1}成功！`);
-
-                            // 下载PNG文件
-                            const a = document.createElement('a');
-                            a.href = pngUrl;
-                            a.download = `${safeTitle || 'patent_drawing'}.png`;
-                            a.style.display = 'none';
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-
-                            errorDiv.innerHTML = '<p style="color:green;">✅ PNG下载成功！</p>';
-                            return pngUrl;
-
-                        } catch (error) {
-                            console.warn(`❌ 方法${i + 1}失败:`, error.message);
-
-                            if (i === methods.length - 1) {
-                                // 所有方法都失败了
-                                throw new Error(`所有PNG转换方法都失败了。最后错误: ${error.message}`);
-                            }
-                        }
-                    }
-                };
-
-                // 执行下载流程
-                tryAllMethods().catch(error => {
-                    console.error("💥 所有PNG转换方法都失败了:", error);
+            svgToPng(svgElementForDownload, safeTitle, errorDiv)
+                .then((pngUrl) => {
+                    triggerDownload(pngUrl, safeTitle);
+                    errorDiv.innerHTML = '<p style="color:green;">✅ PNG下载成功！</p>';
+                    // 短暂延迟后释放URL，避免下载中断
+                    setTimeout(() => URL.revokeObjectURL(pngUrl), 3000);
+                })
+                .catch((error) => {
+                    console.error("💥 PNG转换失败:", error);
                     errorDiv.innerHTML = `
                         <div style="color:red; padding: 15px; border-radius: 8px; background-color: #ffe6e6; border: 2px solid #ff0000;">
                             <h4 style="margin: 0 0 10px 0;">❌ PNG转换失败</h4>
                             <p style="margin: 5px 0; font-size: 0.9em;">
-                                <strong>错误信息:</strong> ${error.message}
+                                <strong>错误信息:</strong> ${error.message || error}
                             </p>
                             <p style="margin: 5px 0; font-size: 0.9em;">
-                                <strong>建议:</strong>
-                            </p>
-                            <ul style="margin: 5px 0; padding-left: 20px; font-size: 0.9em;">
-                                <li>刷新页面重新生成图表</li>
-                                <li>检查图表是否过于复杂</li>
-                                <li>尝试使用不同的浏览器</li>
-                                <li>联系开发者报告此问题</li>
-                            </ul>
+                                <strong>建议:</strong> 请尝试刷新页面或简化图形。如果仍然失败，可优先点击“导出SVG”后自行转换。</p>
+                            <button id="fallback-svg-${drawingKey}" style="padding:6px 10px;border-radius:6px;border:1px solid #999;background:#fff;cursor:pointer;">下载SVG备用</button>
                         </div>
                     `;
-                });
-            };
 
-            // 执行PNG下载 - 绝对只要PNG！
-            downloadPNG();
+                    // 提供SVG兜底下载
+                    const fallbackBtn = document.getElementById(`fallback-svg-${drawingKey}`);
+                    if (fallbackBtn) {
+                        fallbackBtn.onclick = () => {
+                            try {
+                                const size = resolveSvgSize(svgElementForDownload);
+                                const cloned = cloneSvgForExport(svgElementForDownload, size);
+                                const svgString = new XMLSerializer().serializeToString(cloned);
+                                const blob = new Blob(
+                                    [`<?xml version="1.0" encoding="UTF-8"?>\n${svgString}`],
+                                    { type: 'image/svg+xml;charset=utf-8' }
+                                );
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${safeTitle || 'patent_drawing'}.svg`;
+                                a.style.display = 'none';
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                setTimeout(() => URL.revokeObjectURL(url), 3000);
+                            } catch (err) {
+                                console.error('SVG兜底下载失败', err);
+                            }
+                        };
+                    }
+                });
         };
 
     } catch (e) {
